@@ -1,0 +1,16 @@
+## Interface: 16001
+## Title: SkillBuddy |cff7fff7f-Craft Advisor|r
+## Notes: What should I craft next? Cheapest skill-ups for WoW Forever.
+## Author: faslkjd56
+## Category: Professions
+## X-Category: Professions
+## Version: 0.1.0
+## SavedVariables: SkillBuddyDB
+## SavedVariablesPerCharacter: SkillBuddyCharDB
+## AddonCompartmentFunc: SkillBuddy_OnCompartmentClick
+
+Data.lua
+Core.lua
+UI.lua
+SkillBuddy.lua
+Bindings.xml
