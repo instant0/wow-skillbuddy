@@ -204,7 +204,16 @@ SlashCmdList["SKILLBUDDY"] = SkillBuddy.Command
 -- Bootstrap: init saved variables (SB-02) once, then announce the version.
 local frame = CreateFrame("Frame")
 frame:RegisterEvent("PLAYER_LOGIN")
-frame:SetScript("OnEvent", function(self, event)
+frame:RegisterEvent("ADDON_LOADED")
+frame:SetScript("OnEvent", function(self, event, arg1)
+  if event == "ADDON_LOADED" then
+    for _, name in ipairs(SkillBuddy.optionalAddons or {}) do
+      if arg1 == name and type(SkillBuddy.InitSources) == "function" then
+        pcall(SkillBuddy.InitSources)
+      end
+    end
+    return
+  end
   if event ~= "PLAYER_LOGIN" then return end
 
   if type(SkillBuddy.InitDB) == "function" then
@@ -212,6 +221,9 @@ frame:SetScript("OnEvent", function(self, event)
   end
   if type(SkillBuddy.InitSettings) == "function" then
     pcall(SkillBuddy.InitSettings)
+  end
+  if type(SkillBuddy.InitSources) == "function" then
+    pcall(SkillBuddy.InitSources)
   end
 
   if DEFAULT_CHAT_FRAME and DEFAULT_CHAT_FRAME.AddMessage then

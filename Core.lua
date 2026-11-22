@@ -13,6 +13,7 @@ SkillBuddy.Defaults = {
   minimap = { point = "CENTER", x = 0, y = 0, visible = true },
   prices = {},
   ignored = {},
+  tsmPriceSource = "dbmarket",
 }
 
 local charDefaults = {
@@ -142,6 +143,30 @@ local function numeric(value, fallback)
   return n
 end
 
+-- Shared adapter helpers: never trust external addon data or calls.
+local function numericItemID(itemKey, link, itemID)
+  if itemID ~= nil then
+    local id = tonumber(itemID)
+    if id and id > 0 then return math.floor(id) end
+  end
+  if type(link) == "string" then
+    local id = string.match(link, "item:(%d+)")
+    if id then return tonumber(id) end
+  end
+  if type(itemKey) == "string" then
+    local id = string.match(itemKey, "^item:(%d+)$")
+    if id then return tonumber(id) end
+  end
+  return nil
+end
+
+local function callNumber(fn, ...)
+  if type(fn) ~= "function" then return nil end
+  local ok, value = pcall(fn, ...)
+  if not ok then return nil end
+  return tonumber(value)
+end
+
 -- SB-26: ordered, read-only price/count source registry.
 SkillBuddy.Sources = {}
 
@@ -199,6 +224,196 @@ function SkillBuddy.SourceValue(kind, itemKey, link, itemID)
 
   sourceCache[cacheKey] = value or NO_SOURCE_VALUE
   return value
+end
+
+-- SB-27..SB-29: optional adapters are registered after addons have loaded.
+local optionalAddons = {
+  "TradeSkillMaster",
+  "Auctionator",
+  "Carbonite",
+  "Carbonite.Warehouse",
+  "CarboniteWarehouse",
+}
+SkillBuddy.optionalAddons = optionalAddons
+
+local function tsmItemString(itemKey, link, itemID)
+  local api = _G.TSM_API
+  if type(api) ~= "table" or type(api.ToItemString) ~= "function" then return nil end
+
+  local id = numericItemID(itemKey, link, itemID)
+  local candidate = link
+  if not candidate and id then candidate = "item:" .. id end
+  if not candidate and type(itemKey) == "string" and itemKey ~= "" then
+    candidate = itemKey
+  end
+  if not candidate then return nil end
+
+  local ok, result = pcall(api.ToItemString, candidate)
+  if ok and type(result) == "string" and result ~= "" then return result end
+  return nil
+end
+
+local function tsmPriceSourceKnown(api, source)
+  if type(api.GetPriceSourceKeys) ~= "function" then return true end
+  local ok, keys = pcall(api.GetPriceSourceKeys, {})
+  if not ok or type(keys) ~= "table" then return true end
+  for _, key in ipairs(keys) do
+    if key == source then return true end
+  end
+  return false
+end
+
+local function registerTSMSource()
+  local api = _G.TSM_API
+  if type(api) ~= "table" then return end
+  if type(api.GetCustomPriceValue) ~= "function"
+      and type(api.GetPlayerTotals) ~= "function"
+      and type(api.GetBagQuantity) ~= "function"
+      and type(api.GetBankQuantity) ~= "function"
+      and type(api.GetMailQuantity) ~= "function"
+      and type(api.GetGuildQuantity) ~= "function" then
+    return
+  end
+
+  SkillBuddy.RegisterSource("tsm", {
+    price = function(itemKey, link, itemID)
+      local itemString = tsmItemString(itemKey, link, itemID)
+      if not itemString or type(api.GetCustomPriceValue) ~= "function" then return nil end
+
+      local source = SkillBuddyDB and SkillBuddyDB.tsmPriceSource or "dbmarket"
+      if type(source) ~= "string" or source == "" then source = "dbmarket" end
+
+      local ok, value, err = pcall(api.GetCustomPriceValue, source, itemString)
+      if ok and type(value) == "number" then return value end
+
+      if source ~= "dbmarket" and type(err) == "string"
+          and not tsmPriceSourceKnown(api, source) then
+        local fallbackOK, fallback = pcall(api.GetCustomPriceValue, "dbmarket", itemString)
+        if fallbackOK and type(fallback) == "number" then return fallback end
+      end
+      return nil
+    end,
+
+    count = function(itemKey, link, itemID)
+      local itemString = tsmItemString(itemKey, link, itemID)
+      if not itemString then return nil end
+
+      -- SkillBuddy reads the player's own bags in SB-07; sources answer for
+      -- stock outside them (bank, mail, alts, guild bank).
+      local total = nil
+      if type(api.GetPlayerTotals) == "function" then
+        local ok, player, alts = pcall(api.GetPlayerTotals, itemString)
+        if ok then total = (tonumber(player) or 0) + (tonumber(alts) or 0) end
+      end
+
+      if total == nil then
+        total = 0
+        if type(api.GetBankQuantity) == "function" then
+          total = total + (callNumber(api.GetBankQuantity, itemString) or 0)
+        end
+        if type(api.GetMailQuantity) == "function" then
+          total = total + (callNumber(api.GetMailQuantity, itemString) or 0)
+        end
+      end
+
+      if type(api.GetGuildQuantity) == "function" then
+        total = total + (callNumber(api.GetGuildQuantity, itemString) or 0)
+      end
+
+      if total and total > 0 then return math.floor(total) end
+      return nil
+    end,
+  })
+end
+
+local AUCTIONATOR_CALLER = "SkillBuddy"
+
+local function auctionatorHasAgeAPI(v1)
+  return type(v1.GetAuctionAgeByItemID) == "function"
+    or type(v1.GetAuctionAgeByItemLink) == "function"
+end
+
+local function auctionatorAge(v1, id, link)
+  local age = nil
+  if id and type(v1.GetAuctionAgeByItemID) == "function" then
+    age = callNumber(v1.GetAuctionAgeByItemID, AUCTIONATOR_CALLER, id)
+  end
+  if age == nil and link and type(v1.GetAuctionAgeByItemLink) == "function" then
+    age = callNumber(v1.GetAuctionAgeByItemLink, AUCTIONATOR_CALLER, link)
+  end
+  return age
+end
+
+local function registerAuctionatorSource()
+  local addon = _G.Auctionator
+  if type(addon) ~= "table" or type(addon.API) ~= "table" then return end
+  local v1 = addon.API.v1
+  if type(v1) ~= "table" then return end
+  if type(v1.GetAuctionPriceByItemID) ~= "function"
+      and type(v1.GetAuctionPriceByItemLink) ~= "function"
+      and type(v1.GetVendorPriceByItemID) ~= "function"
+      and type(v1.GetVendorPriceByItemLink) ~= "function" then
+    return
+  end
+
+  SkillBuddy.RegisterSource("auctionator", {
+    price = function(itemKey, link, itemID)
+      local id = numericItemID(itemKey, link, itemID)
+      local value = nil
+      if id and type(v1.GetAuctionPriceByItemID) == "function" then
+        value = callNumber(v1.GetAuctionPriceByItemID, AUCTIONATOR_CALLER, id)
+      end
+      if value == nil and link and type(v1.GetAuctionPriceByItemLink) == "function" then
+        value = callNumber(v1.GetAuctionPriceByItemLink, AUCTIONATOR_CALLER, link)
+      end
+      if not value or value <= 0 then return nil end
+      if auctionatorHasAgeAPI(v1) and auctionatorAge(v1, id, link) == nil then
+        return nil
+      end
+      return value
+    end,
+
+    vendorPrice = function(itemKey, link, itemID)
+      local id = numericItemID(itemKey, link, itemID)
+      local value = nil
+      if id and type(v1.GetVendorPriceByItemID) == "function" then
+        value = callNumber(v1.GetVendorPriceByItemID, AUCTIONATOR_CALLER, id)
+      end
+      if value == nil and link and type(v1.GetVendorPriceByItemLink) == "function" then
+        value = callNumber(v1.GetVendorPriceByItemLink, AUCTIONATOR_CALLER, link)
+      end
+      if value and value > 0 then return value end
+      return nil
+    end,
+  })
+end
+
+local function registerCarboniteSource()
+  local addon = _G.Carbonite
+  if type(addon) ~= "table" or type(addon.Plugins) ~= "table" then return end
+  local warehouse = addon.Plugins.Warehouse
+  if type(warehouse) ~= "table" or type(warehouse.CountItem) ~= "function" then
+    return
+  end
+
+  SkillBuddy.RegisterSource("carbonite", {
+    count = function(itemKey, link, itemID)
+      local id = numericItemID(itemKey, link, itemID)
+      if not id then return nil end
+      local value = callNumber(warehouse.CountItem, warehouse, id)
+      if value and value > 0 then return math.floor(value) end
+      return nil
+    end,
+  })
+end
+
+function SkillBuddy.InitSources()
+  -- Rebuild so a source whose public API disappeared is not left registered.
+  SkillBuddy.Sources = {}
+  SkillBuddy.ResetSourceCache()
+  registerTSMSource()
+  registerAuctionatorSource()
+  registerCarboniteSource()
 end
 
 function SkillBuddy.Scan.Current()
