@@ -94,6 +94,23 @@ function SkillBuddy.InitSettings()
       "Count reagents in the bank as well as in bags."
     )
 
+    addCheckbox(
+      "Assume purchasable materials", "SKILLBUDDY_ASSUME_PURCHASABLE", true,
+      function()
+        if type(SkillBuddy.Cost.AssumePurchasable) == "function" then
+          return SkillBuddy.Cost.AssumePurchasable() == true
+        end
+        return dbGet("assumePurchasable") ~= false
+      end,
+      function(value)
+        dbSet("assumePurchasable", value == true)
+        if type(SkillBuddy.ResetSourceCache) == "function" then
+          pcall(SkillBuddy.ResetSourceCache)
+        end
+      end,
+      "Allow missing mats when a real AH or vendor price is known."
+    )
+
     local countSetting = addSetting(
       "Results to show", "SKILLBUDDY_RESULT_COUNT", 5,
       function()
@@ -159,6 +176,100 @@ SkillBuddy.RegisterCommand("config", function()
   else
     SkillBuddy.Print("Settings panel is not available.")
   end
+end)
+
+local function asIfDB()
+  if type(SkillBuddyDB) ~= "table" then return nil end
+  if type(SkillBuddyDB.asIfOwned) ~= "table" then SkillBuddyDB.asIfOwned = {} end
+  return SkillBuddyDB.asIfOwned
+end
+
+local function asIfUsage()
+  SkillBuddy.Print("Usage: /sb asif [itemLink|itemID|name]; /sb asif clear <key>; /sb asif clear all")
+end
+
+local function listAsIf()
+  local db = asIfDB()
+  if not db then
+    SkillBuddy.Print("As-if list is unavailable.")
+    return
+  end
+  local keys = {}
+  for key, value in pairs(db) do
+    if value == true then keys[#keys + 1] = key end
+  end
+  table.sort(keys)
+  if #keys == 0 then
+    SkillBuddy.Print("As-if list is empty.")
+  else
+    SkillBuddy.Print("As-if owned (" .. #keys .. "): " .. table.concat(keys, ", "))
+  end
+end
+
+local function resetAsIfCache()
+  if type(SkillBuddy.ResetSourceCache) == "function" then
+    pcall(SkillBuddy.ResetSourceCache)
+  end
+end
+
+SkillBuddy.RegisterCommand("asif", function(arg)
+  local text = string.gsub(tostring(arg or ""), "^%s+", "")
+  text = string.gsub(text, "%s+$", "")
+  local lower = string.lower(text)
+
+  if lower == "" then
+    listAsIf()
+    return
+  end
+
+  local db = asIfDB()
+  if not db then
+    SkillBuddy.Print("As-if list is unavailable.")
+    return
+  end
+
+  local clearKey = string.match(lower, "^clear%s+(.+)$")
+  if clearKey then
+    clearKey = string.gsub(clearKey, "^%s+", "")
+    clearKey = string.gsub(clearKey, "%s+$", "")
+    if clearKey == "all" then
+      local removed = 0
+      for key in pairs(db) do
+        db[key] = nil
+        removed = removed + 1
+      end
+      resetAsIfCache()
+      SkillBuddy.Print("Cleared " .. removed .. " as-if entries.")
+      return
+    end
+
+    local normalized = type(SkillBuddy.NormalizeItemKey) == "function"
+        and SkillBuddy.NormalizeItemKey(clearKey) or nil
+    if not normalized or db[normalized] ~= true then
+      SkillBuddy.Print("No as-if entry for: " .. clearKey)
+      return
+    end
+    db[normalized] = nil
+    resetAsIfCache()
+    SkillBuddy.Print("Removed as-if entry: " .. normalized)
+    return
+  end
+
+  if lower == "clear" or lower == "help" then
+    asIfUsage()
+    return
+  end
+
+  local normalized = type(SkillBuddy.NormalizeItemKey) == "function"
+      and SkillBuddy.NormalizeItemKey(text) or nil
+  if not normalized then
+    asIfUsage()
+    return
+  end
+
+  db[normalized] = true
+  resetAsIfCache()
+  SkillBuddy.Print("Added as-if entry: " .. normalized)
 end)
 
 SkillBuddy.RegisterCommand("help", function()
