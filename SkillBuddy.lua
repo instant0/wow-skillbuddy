@@ -550,7 +550,9 @@ local function printDebugEvidence(entry, snapshot)
       .. ", raw=" .. tostring(recipe.difficulty or "unknown")
       .. ", color=" .. color
       .. ", p=" .. tostring(entry.p or 0)
-      .. ", threshold=" .. tostring(recipe.thresholdSource or "unknown"))
+      .. ", threshold=" .. tostring(recipe.thresholdSource or "unknown")
+      .. ", learned=" .. tostring(recipe.learned)
+      .. ", learnable=" .. tostring(recipe.learnable))
 end
 
 local function printDebugEntry(entry, label, snapshot)
