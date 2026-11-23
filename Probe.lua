@@ -1,12 +1,12 @@
 --[[---------------------------------------------------------------------------------
-  SkillBuddy - by faslkjd56
+  Skilly - by faslkjd56
   WoW Forever 1.60.1 craft advisor
   Probe.lua - read-only API diagnostics
 ------------------------------------------------------------------------------------]]
 
-SkillBuddy = SkillBuddy or {}
-SkillBuddy.Internal = SkillBuddy.Internal or {}
-local Internal = SkillBuddy.Internal
+Skilly = Skilly or {}
+Skilly.Internal = Skilly.Internal or {}
+local Internal = Skilly.Internal
 
 -- SB-05/SB-36/SB-50: read-only API diagnostics.
 local probeApis = {
@@ -39,7 +39,7 @@ local function callAndPrint(label, fn, ...)
   local results = { pcall(fn, ...) }
   local ok = table.remove(results, 1)
   if not ok then
-    SkillBuddy.Print(label .. " error: " .. tostring(results[1]))
+    Skilly.Print(label .. " error: " .. tostring(results[1]))
     return
   end
 
@@ -47,7 +47,7 @@ local function callAndPrint(label, fn, ...)
   for i = 1, math.min(#results, 6) do
     parts[#parts + 1] = Internal.ScalarText(results[i])
   end
-  SkillBuddy.Print(label .. " = " .. table.concat(parts, ", "))
+  Skilly.Print(label .. " = " .. table.concat(parts, ", "))
 end
 
 -- Unlike callAndPrint, this keeps the value type visible. Empty strings and
@@ -57,7 +57,7 @@ local function callAndDescribe(label, fn, ...)
   local results = { pcall(fn, ...) }
   local ok = table.remove(results, 1)
   if not ok then
-    SkillBuddy.Print(label .. " error: " .. tostring(results[1]))
+    Skilly.Print(label .. " error: " .. tostring(results[1]))
     return
   end
 
@@ -66,7 +66,7 @@ local function callAndDescribe(label, fn, ...)
     local value = results[i]
     parts[#parts + 1] = Internal.ScalarText(value) .. "(" .. type(value) .. ")"
   end
-  SkillBuddy.Print(label .. " = " .. table.concat(parts, ", "))
+  Skilly.Print(label .. " = " .. table.concat(parts, ", "))
 end
 
 local function apiState(value)
@@ -75,7 +75,7 @@ end
 
 local function printTableFields(label, value, maxFields)
   if type(value) ~= "table" then
-    SkillBuddy.Print(label .. " returned " .. type(value))
+    Skilly.Print(label .. " returned " .. type(value))
     return
   end
   local keys = {}
@@ -83,13 +83,13 @@ local function printTableFields(label, value, maxFields)
     if type(key) == "string" then keys[#keys + 1] = key end
   end
   table.sort(keys)
-  SkillBuddy.Print(label .. " fields = " .. #keys)
+  Skilly.Print(label .. " fields = " .. #keys)
   local limit = math.min(#keys, maxFields or 40)
   for i = 1, limit do
-    SkillBuddy.Print("  " .. keys[i] .. " = " .. Internal.ScalarText(value[keys[i]]))
+    Skilly.Print("  " .. keys[i] .. " = " .. Internal.ScalarText(value[keys[i]]))
   end
   if #keys > limit then
-    SkillBuddy.Print("  ... " .. (#keys - limit) .. " more fields")
+    Skilly.Print("  ... " .. (#keys - limit) .. " more fields")
   end
 end
 
@@ -111,34 +111,34 @@ local probeRecipeAPIs
 
 local function probeTradeSkillUI()
   local capi = _G.C_TradeSkillUI
-  SkillBuddy.Print("C_TradeSkillUI: " .. (type(capi) == "table" and "available" or "missing"))
+  Skilly.Print("C_TradeSkillUI: " .. (type(capi) == "table" and "available" or "missing"))
   if type(capi) ~= "table" then return nil end
 
-  SkillBuddy.Print("C_TradeSkillUI.GetAllRecipeIDs: " .. apiState(capi.GetAllRecipeIDs))
-  SkillBuddy.Print("C_TradeSkillUI.GetRecipeInfo: " .. apiState(capi.GetRecipeInfo))
+  Skilly.Print("C_TradeSkillUI.GetAllRecipeIDs: " .. apiState(capi.GetAllRecipeIDs))
+  Skilly.Print("C_TradeSkillUI.GetRecipeInfo: " .. apiState(capi.GetRecipeInfo))
   if type(capi.GetAllRecipeIDs) ~= "function" then return nil end
 
   local ok, ids = pcall(capi.GetAllRecipeIDs)
   if not ok then
-    SkillBuddy.Print("C_TradeSkillUI.GetAllRecipeIDs error: " .. tostring(ids))
+    Skilly.Print("C_TradeSkillUI.GetAllRecipeIDs error: " .. tostring(ids))
     return nil
   end
   if type(ids) ~= "table" then
-    SkillBuddy.Print("C_TradeSkillUI.GetAllRecipeIDs returned " .. type(ids))
+    Skilly.Print("C_TradeSkillUI.GetAllRecipeIDs returned " .. type(ids))
     return nil
   end
 
   local count = 0
   for _ in pairs(ids) do count = count + 1 end
-  SkillBuddy.Print("C_TradeSkillUI recipe IDs = " .. count)
+  Skilly.Print("C_TradeSkillUI recipe IDs = " .. count)
   local sampleID = firstPositiveNumber(ids)
   if sampleID and type(capi.GetRecipeInfo) == "function" then
     local okInfo, info = pcall(capi.GetRecipeInfo, sampleID)
     if okInfo then
-      SkillBuddy.Print("C_TradeSkillUI.GetRecipeInfo(" .. sampleID .. "):")
+      Skilly.Print("C_TradeSkillUI.GetRecipeInfo(" .. sampleID .. "):")
       printRecipeInfo(info)
     else
-      SkillBuddy.Print("C_TradeSkillUI.GetRecipeInfo error: " .. tostring(info))
+      Skilly.Print("C_TradeSkillUI.GetRecipeInfo error: " .. tostring(info))
     end
     probeRecipeAPIs(capi, sampleID)
   end
@@ -161,11 +161,11 @@ probeRecipeAPIs = function(capi, recipeID)
 
   for _, call in ipairs(calls) do
     local fn = capi[call.name]
-    SkillBuddy.Print("C_TradeSkillUI." .. call.name .. ": " .. apiState(fn))
+    Skilly.Print("C_TradeSkillUI." .. call.name .. ": " .. apiState(fn))
     if type(fn) == "function" then
       local ok, value = pcall(fn, Internal.Unpack(call.args))
       if not ok then
-        SkillBuddy.Print("C_TradeSkillUI." .. call.name .. " error: " .. tostring(value))
+        Skilly.Print("C_TradeSkillUI." .. call.name .. " error: " .. tostring(value))
       elseif type(value) == "table" then
         printTableFields("C_TradeSkillUI." .. call.name .. "(" .. recipeID .. ")", value, 30)
         local reagentKeys = {
@@ -191,7 +191,7 @@ probeRecipeAPIs = function(capi, recipeID)
           end
         end
       else
-        SkillBuddy.Print("C_TradeSkillUI." .. call.name .. " = "
+        Skilly.Print("C_TradeSkillUI." .. call.name .. " = "
             .. Internal.ScalarText(value) .. "(" .. type(value) .. ")")
       end
     end
@@ -201,18 +201,18 @@ end
 local function probeTrainer()
   local tip = _G.GameTooltip
   local okFn, setService = pcall(function() return tip and tip.SetTrainerService end)
-  SkillBuddy.Print("GameTooltip.SetTrainerService: "
+  Skilly.Print("GameTooltip.SetTrainerService: "
       .. (okFn and apiState(setService) or "missing"))
 
   if not Internal.TrainerWindowOpen() then
-    SkillBuddy.Print("trainer window closed - no rows read")
+    Skilly.Print("trainer window closed - no rows read")
     return
   end
 
-  SkillBuddy.Print("trainer window open - reading up to 5 sample rows")
+  Skilly.Print("trainer window open - reading up to 5 sample rows")
   local serviceCount = Internal.TrainerServiceCount()
   if serviceCount < 1 then serviceCount = 1 end
-  SkillBuddy.Print("GetNumTrainerServices() = " .. serviceCount)
+  Skilly.Print("GetNumTrainerServices() = " .. serviceCount)
 
   for i = 1, math.min(serviceCount, 5) do
     callAndDescribe("GetTrainerServiceInfo(" .. i .. ")", _G.GetTrainerServiceInfo, i)
@@ -221,19 +221,19 @@ local function probeTrainer()
     callAndDescribe("GetTrainerServiceSkillLine(" .. i .. ")",
         _G.GetTrainerServiceSkillLine, i)
     local spellID = Internal.TrainerSpellID(i)
-    SkillBuddy.Print("trainer spellID(" .. i .. ") = " .. tostring(spellID or "unknown"))
+    Skilly.Print("trainer spellID(" .. i .. ") = " .. tostring(spellID or "unknown"))
   end
 end
 
-function SkillBuddy.Probe()
+function Skilly.Probe()
   for _, name in ipairs(probeApis) do
-    SkillBuddy.Print(name .. ": " .. apiState(_G[name]))
+    Skilly.Print(name .. ": " .. apiState(_G[name]))
   end
   probeTradeSkillUI()
 
   local modern = Internal.ProfessionWindowInfo()
   if modern then
-    SkillBuddy.Print("Profession window detected: " .. modern.professionName
+    Skilly.Print("Profession window detected: " .. modern.professionName
         .. ", skill " .. tostring(tonumber(modern.skillLevel) or 0) .. "/"
         .. tostring(tonumber(modern.maxSkillLevel) or 0))
   else
@@ -252,14 +252,14 @@ function SkillBuddy.Probe()
       callAndPrint("GetTradeSkillInfo(1)", _G.GetTradeSkillInfo, 1)
       callAndPrint("GetTradeSkillRecipeLink(1)", _G.GetTradeSkillRecipeLink, 1)
     else
-      SkillBuddy.Print("No profession window detected.")
+      Skilly.Print("No profession window detected.")
     end
   end
 
   probeTrainer()
 end
 
-SkillBuddy.RegisterCommand("probe", SkillBuddy.Probe, {
-  usage = "/sb probe",
+Skilly.RegisterCommand("probe", Skilly.Probe, {
+  usage = "/skilly probe",
   description = "Report available game APIs, the profession window, and trainer state.",
 })

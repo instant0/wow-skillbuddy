@@ -1,11 +1,11 @@
 --[[---------------------------------------------------------------------------------
-  SkillBuddy - by faslkjd56
+  Skilly - by faslkjd56
   WoW Forever 1.60.1 craft advisor
 ------------------------------------------------------------------------------------]]
 
-SkillBuddy = SkillBuddy or {}
+Skilly = Skilly or {}
 
-SkillBuddy.Defaults = {
+Skilly.Defaults = {
   schema = 1,
   mode = "cheap",
   includeBank = false,
@@ -25,6 +25,7 @@ local charDefaults = {
   schema = 1,
   learned = {},
   observations = {},
+  bankCache = nil,
 }
 
 -- Fill only nil fields so user values (including false) are never replaced.
@@ -44,36 +45,36 @@ local function fillMissing(dst, src)
   end
 end
 
-function SkillBuddy.InitDB()
-  if type(SkillBuddyDB) ~= "table" then SkillBuddyDB = {} end
-  if type(SkillBuddyCharDB) ~= "table" then SkillBuddyCharDB = {} end
+function Skilly.InitDB()
+  if type(SkillyDB) ~= "table" then SkillyDB = {} end
+  if type(SkillyCharDB) ~= "table" then SkillyCharDB = {} end
 
-  fillMissing(SkillBuddyDB, SkillBuddy.Defaults)
-  fillMissing(SkillBuddyCharDB, charDefaults)
+  fillMissing(SkillyDB, Skilly.Defaults)
+  fillMissing(SkillyCharDB, charDefaults)
 end
 
 -- Command registry lives here because Core.lua loads before feature modules.
-SkillBuddy.commands = SkillBuddy.commands or {}
-SkillBuddy.commandInfo = SkillBuddy.commandInfo or {}
+Skilly.commands = Skilly.commands or {}
+Skilly.commandInfo = Skilly.commandInfo or {}
 
 -- SB-45: metadata is inert. A missing or malformed description never stops a
 -- command from running, and good metadata is never replaced by nil.
-function SkillBuddy.RegisterCommand(name, fn, info)
+function Skilly.RegisterCommand(name, fn, info)
   if type(name) ~= "string" or type(fn) ~= "function" then return end
   name = string.lower(name)
-  SkillBuddy.commands[name] = fn
+  Skilly.commands[name] = fn
 
   if type(info) == "table" then
-    local entry = SkillBuddy.commandInfo[name] or {}
+    local entry = Skilly.commandInfo[name] or {}
     if type(info.usage) == "string" and info.usage ~= "" then
       entry.usage = info.usage
     end
     if type(info.description) == "string" and info.description ~= "" then
       entry.description = info.description
     end
-    SkillBuddy.commandInfo[name] = entry
-  elseif SkillBuddy.commandInfo[name] == nil then
-    SkillBuddy.commandInfo[name] = {}
+    Skilly.commandInfo[name] = entry
+  elseif Skilly.commandInfo[name] == nil then
+    Skilly.commandInfo[name] = {}
   end
 end
 
@@ -81,17 +82,17 @@ end
 local MAX_OUTPUT_LINES = 400
 local outputLog = {}
 
-function SkillBuddy.ClearOutputLog()
+function Skilly.ClearOutputLog()
   outputLog = {}
 end
 
-function SkillBuddy.OutputLog()
+function Skilly.OutputLog()
   local copy = {}
   for i = 1, #outputLog do copy[i] = outputLog[i] end
   return copy
 end
 
-function SkillBuddy.Print(message)
+function Skilly.Print(message)
   local okLine, line = pcall(tostring, message)
   if not okLine or type(line) ~= "string" then line = "<unprintable>" end
 
@@ -102,14 +103,14 @@ function SkillBuddy.Print(message)
   if not frame then return end
   local okFn, addMessage = pcall(function() return frame.AddMessage end)
   if not okFn or type(addMessage) ~= "function" then return end
-  pcall(addMessage, frame, "[SkillBuddy] " .. line)
+  pcall(addMessage, frame, "[Skilly] " .. line)
 end
 
 
 -- SB-55: small, safety-checked helpers shared by the split runtime modules.
--- These are internal; public behavior stays on the SkillBuddy.* namespaces.
-SkillBuddy.Internal = SkillBuddy.Internal or {}
-local Internal = SkillBuddy.Internal
+-- These are internal; public behavior stays on the Skilly.* namespaces.
+Skilly.Internal = Skilly.Internal or {}
+local Internal = Skilly.Internal
 
 Internal.Unpack = table.unpack or unpack
 
@@ -187,8 +188,8 @@ function Internal.ReagentKey(reagent)
   if type(reagent.key) == "string" and reagent.key ~= "" then
     return reagent.key
   end
-  return SkillBuddy.NormalizeItemKey(reagent.link)
-      or SkillBuddy.NormalizeItemKey(reagent.name)
+  return Skilly.NormalizeItemKey(reagent.link)
+      or Skilly.NormalizeItemKey(reagent.name)
       or ""
 end
 
@@ -196,7 +197,7 @@ end
 -- Sources.lua's registry caches.
 Internal.ResetHooks = {}
 
-function SkillBuddy.RegisterReset(fn)
+function Skilly.RegisterReset(fn)
   if type(fn) ~= "function" then return end
   Internal.ResetHooks[#Internal.ResetHooks + 1] = fn
 end
@@ -204,13 +205,94 @@ end
 -- SB-12/SB-46: shared source-grade order, used by Cost and Rank.
 Internal.GradeOrder = { onHand = 0, asIf = 1, vendor = 2, market = 3, unknown = 4 }
 
--- SB-48/SB-43: forward-compatible feature lookup. SB-43 may later replace this
--- with a full registry; until then a stored boolean or the safe default wins.
-function SkillBuddy.FeatureEnabled(key, default)
+-- SB-43: one registry for every realistic option. Rows are data only; the safe
+-- lookup below handles corrupt saves and unknown keys.
+Skilly.Features = {
+  { key = "useAuctionator", default = true, category = "Prices",
+    label = "Auctionator prices",
+    tooltip = "Allow read-only Auctionator price lookups." },
+  { key = "useAuctioneer", default = true, category = "Prices",
+    label = "Auctioneer prices",
+    tooltip = "Allow read-only Auctioneer price lookups." },
+  { key = "useTSM", default = true, category = "Prices",
+    label = "TSM prices",
+    tooltip = "Allow read-only TSM price lookups." },
+  { key = "useVendorPrices", default = true, category = "Prices",
+    label = "Vendor prices",
+    tooltip = "Use bundled and addon-provided vendor prices." },
+  { key = "useManualPrices", default = true, category = "Prices",
+    label = "Manual prices",
+    tooltip = "Use /skilly prices overrides." },
+  { key = "useAsIfOwned", default = true, category = "Prices",
+    label = "As-if-owned materials",
+    tooltip = "Treat listed materials as free and available." },
+
+  { key = "allowAHMaterials", default = true, category = "Ranking",
+    label = "Recommend bought materials",
+    tooltip = "Off: only on-hand or as-if-owned materials can satisfy a recipe." },
+  { key = "useScarcity", default = true, category = "Ranking",
+    label = "Scarcity estimate",
+    tooltip = "Estimate unknown prices by material scarcity instead of 1 copper." },
+  { key = "useCrossSkill", default = true, category = "Ranking",
+    label = "Cross-skill weight",
+    tooltip = "Count other-profession materials as harder to obtain." },
+  { key = "useRarity", default = true, category = "Ranking",
+    label = "Item-rarity weight",
+    tooltip = "Count rare materials as harder to obtain." },
+  { key = "useTierWeight", default = true, category = "Ranking",
+    label = "Material-tier weight",
+    tooltip = "Scale scarcity by material tier." },
+  { key = "useProbability", default = true, category = "Ranking",
+    label = "Skill-up probability",
+    tooltip = "Rank by cost per expected skill point instead of raw cost." },
+  { key = "useObservedRate", default = true, category = "Ranking",
+    label = "Observed craft rate",
+    tooltip = "Allow bounded craft observations to change crafts per point." },
+  { key = "useSynergy", default = false, category = "Ranking",
+    label = "Synergy skills",
+    tooltip = "Show opt-in hints when a craft can supply Enchanting dust." },
+
+  { key = "showSourceLabels", default = true, category = "Output",
+    label = "Source labels",
+    tooltip = "Show manual/vendor/auction source labels in recommendations." },
+  { key = "showMissing", default = true, category = "Output",
+    label = "Missing materials",
+    tooltip = "Show missing-material details." },
+  { key = "showEstimates", default = true, category = "Output",
+    label = "Estimate markers",
+    tooltip = "Show the (estimate) marker on estimated probabilities." },
+  { key = "showUnlockHints", default = true, category = "Output",
+    label = "Unlock hints",
+    tooltip = "Show trainer-captured unlock hints." },
+  { key = "showResaleWarning", default = false, category = "Output",
+    label = "Resale warning",
+    tooltip = "Warn when full material cost exceeds the item's reliable sell price." },
+  { key = "showFullCostRecommendation", default = true, category = "Output",
+    label = "Full-material-cost winner",
+    tooltip = "Show the separate full-material-cost recommendation." },
+}
+
+function Skilly.Features.IsEnabled(key)
+  if type(key) ~= "string" or key == "" then return nil end
+  local db = type(SkillyDB) == "table" and SkillyDB or nil
+  for _, row in ipairs(Skilly.Features) do
+    if type(row) == "table" and row.key == key then
+      local stored = nil
+      if db and type(db.features) == "table" then stored = db.features[key] end
+      if type(stored) == "boolean" then return stored end
+      return row.default == true
+    end
+  end
+  return nil
+end
+
+-- SB-43: safe lookup used by every call site. Unknown keys and corrupt values
+-- fall back to the caller's default without throwing.
+function Skilly.FeatureEnabled(key, default)
   if type(key) ~= "string" or key == "" then return default end
   if type(default) ~= "boolean" then default = true end
 
-  local features = SkillBuddy.Features
+  local features = Skilly.Features
   if type(features) == "table" then
     if type(features.IsEnabled) == "function" then
       local ok, value = pcall(features.IsEnabled, key)
@@ -220,7 +302,7 @@ function SkillBuddy.FeatureEnabled(key, default)
     if type(value) == "boolean" then return value end
   end
 
-  local db = type(SkillBuddyDB) == "table" and SkillBuddyDB or nil
+  local db = type(SkillyDB) == "table" and SkillyDB or nil
   local stored = nil
   if db and type(db.features) == "table" then stored = db.features[key] end
   if type(stored) == "boolean" then return stored end

@@ -1,9 +1,9 @@
 --[[---------------------------------------------------------------------------------
-  SkillBuddy - by faslkjd56
+  Skilly - by faslkjd56
   WoW Forever 1.60.1 craft advisor
 ------------------------------------------------------------------------------------]]
 
-SkillBuddy = SkillBuddy or {}
+Skilly = Skilly or {}
 
 -- SB-37: compact skill thresholds derived independently from public game data:
 -- wago.tools SkillLineAbility CSV for WoW Forever build 1.60.1.71037
@@ -12,7 +12,7 @@ SkillBuddy = SkillBuddy or {}
 -- These are factual game values only. No addon code, generator, comments, or
 -- generated Lua table was copied. The live client color remains authoritative;
 -- per-character learned values win, then this table, then band estimates.
-SkillBuddy.Thresholds = {
+Skilly.Thresholds = {
 	[818] = { 25, 75 },
 	[2149] = { 40, 70 },
 	[2152] = { 30, 60 },
@@ -2379,8 +2379,8 @@ SkillBuddy.Thresholds = {
 -- `buyprice` for items confirmed as reagents in wago.tools `SpellReagents` for
 -- Forever build 1.60.1.71037. No addon code or price table was copied. Expand
 -- from the same public source when needed; addon vendor-price APIs are also
--- consulted by SkillBuddy.Cost.PriceFor.
-SkillBuddy.VendorPrices = {
+-- consulted by Skilly.Cost.PriceFor.
+Skilly.VendorPrices = {
 	[159] = 5,
 	[765] = 40,
 	[785] = 80,
@@ -2410,11 +2410,22 @@ SkillBuddy.VendorPrices = {
 	[14341] = 5000,
 }
 
+-- SB-42: exact item-name -> dust hints from the public guide facts recorded in
+-- tasks/ranking/SB-42-synergy-skills.md. No numeric yields or guessed Forever
+-- item IDs are bundled; this is informational only and never changes ranking.
+Skilly.DisenchantTargets = {
+	["azure silk pants"] = "Soul Dust",
+	["red mageweave pants"] = "Vision Dust",
+	["red mageweave gloves"] = "Vision Dust",
+	["runecloth belt"] = "Dream Dust",
+	["runecloth shoulders"] = "Illusion Dust",
+}
+
 -- SB-39: small static fallback for material pressure when GetItemInfo has no
 -- cached data. Values are public game facts (item identity/material tier), not
 -- copied addon data. Runtime rarity/itemLevel/subtype are preferred when
 -- available. `sourceSkill` marks cross-profession materials.
-SkillBuddy.MaterialPressure = {
+Skilly.MaterialPressure = {
 	[2996] = { tier = 1, kind = "gathered" }, -- Bolt of Linen Cloth
 	[2997] = { tier = 2, kind = "gathered" }, -- Bolt of Woolen Cloth
 	[4305] = { tier = 3, kind = "gathered" }, -- Bolt of Silk Cloth
@@ -2459,7 +2470,7 @@ SkillBuddy.MaterialPressure = {
 -- ~49-1%, gray 0%. Yellow/green use band midpoints as coarse estimates until
 -- exact thresholds are available (SB-37). Retail 12.x mechanics (numSkillUps,
 -- quality, concentration) are deliberately excluded.
-SkillBuddy.Difficulty = {
+Skilly.Difficulty = {
   Model = {
     optimal = { color = "orange", base = 1.0, estimate = false },
     medium = { color = "yellow", base = 0.75, estimate = true },
@@ -2470,10 +2481,10 @@ SkillBuddy.Difficulty = {
 
 local UNKNOWN = { color = "unknown", base = 0.25, estimate = true }
 
-function SkillBuddy.Difficulty.Detect(raw)
+function Skilly.Difficulty.Detect(raw)
   local entry = UNKNOWN
   if type(raw) == "string" then
-    entry = SkillBuddy.Difficulty.Model[string.lower(raw)] or UNKNOWN
+    entry = Skilly.Difficulty.Model[string.lower(raw)] or UNKNOWN
   end
   -- Return a fresh table so callers cannot mutate Model or UNKNOWN.
   return {

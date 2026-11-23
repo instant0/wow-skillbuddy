@@ -1,11 +1,11 @@
 --[[---------------------------------------------------------------------------------
-  SkillBuddy - by faslkjd56
+  Skilly - by faslkjd56
   WoW Forever 1.60.1 craft advisor
   Hints.lua - unlock hints from live trainer capture only
 ------------------------------------------------------------------------------------]]
 
-SkillBuddy = SkillBuddy or {}
-SkillBuddy.Hints = SkillBuddy.Hints or {}
+Skilly = Skilly or {}
+Skilly.Hints = Skilly.Hints or {}
 
 local MAX_HINTS = 2
 
@@ -18,8 +18,8 @@ local function positiveInteger(value, minValue, maxValue)
 end
 
 local function featureEnabled(key)
-  if type(SkillBuddy.FeatureEnabled) == "function" then
-    local ok, value = pcall(SkillBuddy.FeatureEnabled, key, true)
+  if type(Skilly.FeatureEnabled) == "function" then
+    local ok, value = pcall(Skilly.FeatureEnabled, key, true)
     if ok and type(value) == "boolean" then return value end
   end
   return true
@@ -57,7 +57,7 @@ local function topLine(entry)
   local recipe = type(entry.recipe) == "table" and entry.recipe or {}
   local name = cleanText(recipe.name) or "current best"
   local color = "not guaranteed"
-  local detect = SkillBuddy.Difficulty and SkillBuddy.Difficulty.Detect
+  local detect = Skilly.Difficulty and Skilly.Difficulty.Detect
   if type(detect) == "function" then
     local ok, info = pcall(detect, recipe.difficulty)
     if ok and type(info) == "table" and type(info.color) == "string" then
@@ -82,7 +82,7 @@ local function topLine(entry)
 end
 
 local function bundledWillBeOrange(spellID, skill)
-  local thresholds = SkillBuddy.Thresholds
+  local thresholds = Skilly.Thresholds
   if type(thresholds) ~= "table" then return false end
   local row = thresholds[spellID]
   if type(row) ~= "table" then return false end
@@ -95,7 +95,7 @@ end
 
 local function candidates(snapshot, skill)
   local found = {}
-  local db = type(SkillBuddyDB) == "table" and SkillBuddyDB.trainerRecipes or nil
+  local db = type(SkillyDB) == "table" and SkillyDB.trainerRecipes or nil
   if type(db) ~= "table" then return found end
 
   local knownSpell = {}
@@ -112,7 +112,7 @@ local function candidates(snapshot, skill)
   for id, _ in pairs(db) do
     local spellID = positiveInteger(id, 1, nil)
     if spellID and not knownSpell[spellID] then
-      local ok, row = pcall(SkillBuddy.Trainer.Recipe, spellID)
+      local ok, row = pcall(Skilly.Trainer.Recipe, spellID)
       if ok and type(row) == "table" then
         local name = cleanText(row.name)
         local required = positiveInteger(row.skillRequired, 1, 10000)
@@ -134,10 +134,10 @@ local function candidates(snapshot, skill)
   return found
 end
 
--- SB-48: debug-only explanation. It never appears in /sb next, and it stays
+-- SB-48: debug-only explanation. It never appears in /skilly next, and it stays
 -- silent when no trainer data exists, so it is not a "check a trainer" nag.
-function SkillBuddy.Hints.Status(entry)
-  local db = type(SkillBuddyDB) == "table" and SkillBuddyDB.trainerRecipes or nil
+function Skilly.Hints.Status(entry)
+  local db = type(SkillyDB) == "table" and SkillyDB.trainerRecipes or nil
   if type(db) ~= "table" then return nil end
   local stored = 0
   for _ in pairs(db) do stored = stored + 1 end
@@ -147,15 +147,15 @@ function SkillBuddy.Hints.Status(entry)
     return "unlock hints: disabled by showUnlockHints"
   end
 
-  local snapshot = SkillBuddy.lastSnapshot
+  local snapshot = Skilly.lastSnapshot
   if type(snapshot) ~= "table" or type(snapshot.recipes) ~= "table" then return nil end
   local skill = positiveInteger(snapshot.skill, 0, 10000)
   if not skill then return nil end
 
   if not entryIsUsable(entry) then return nil end
 
-  if type(SkillBuddy.Trainer) ~= "table"
-      or type(SkillBuddy.Trainer.Recipe) ~= "function" then
+  if type(Skilly.Trainer) ~= "table"
+      or type(Skilly.Trainer.Recipe) ~= "function" then
     return nil
   end
 
@@ -165,17 +165,17 @@ function SkillBuddy.Hints.Status(entry)
   return nil
 end
 
--- SB-48/SB-54: called by Rank.DescribeHints from /sb next, /sb debug, and the
+-- SB-48/SB-54: called by Rank.DescribeHints from /skilly next, /skilly debug, and the
 -- copyable export. With no trainer data, no toggle, or no snapshot it is silent.
-function SkillBuddy.Hints.Lines(entry)
+function Skilly.Hints.Lines(entry)
   local lines = {}
   if not featureEnabled("showUnlockHints") then return lines end
   if not entryIsUsable(entry) then return lines end
 
-  local snapshot = SkillBuddy.lastSnapshot
+  local snapshot = Skilly.lastSnapshot
   if type(snapshot) ~= "table" or type(snapshot.recipes) ~= "table" then return lines end
-  if type(SkillBuddy.Trainer) ~= "table"
-      or type(SkillBuddy.Trainer.Recipe) ~= "function" then
+  if type(Skilly.Trainer) ~= "table"
+      or type(Skilly.Trainer.Recipe) ~= "function" then
     return lines
   end
 
@@ -189,7 +189,7 @@ function SkillBuddy.Hints.Lines(entry)
   end
   if #rows > 0 then
     lines[#lines + 1] = topLine(entry)
-    lines[#lines + 1] = "Check a trainer - SkillBuddy does not buy or learn recipes."
+    lines[#lines + 1] = "Check a trainer - Skilly does not buy or learn recipes."
   end
   return lines
 end

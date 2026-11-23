@@ -1,12 +1,12 @@
 --[[---------------------------------------------------------------------------------
-  SkillBuddy - by faslkjd56
+  Skilly - by faslkjd56
   WoW Forever 1.60.1 craft advisor
   Trainer.lua - read-only live trainer recipe capture
 ------------------------------------------------------------------------------------]]
 
-SkillBuddy = SkillBuddy or {}
-SkillBuddy.Trainer = SkillBuddy.Trainer or {}
-local Internal = SkillBuddy.Internal or {}
+Skilly = Skilly or {}
+Skilly.Trainer = Skilly.Trainer or {}
+local Internal = Skilly.Internal or {}
 
 -- Bounds keep a bad or spoofed client result from growing SavedVariables.
 local MAX_ROWS = 500
@@ -56,29 +56,29 @@ local function nowStamp()
 end
 
 local function recipeDB(create)
-  if type(SkillBuddyDB) ~= "table" then
+  if type(SkillyDB) ~= "table" then
     if not create then return nil end
-    SkillBuddyDB = {}
+    SkillyDB = {}
   end
-  local db = SkillBuddyDB.trainerRecipes
+  local db = SkillyDB.trainerRecipes
   if type(db) ~= "table" then
     if not create then return nil end
     db = {}
-    SkillBuddyDB.trainerRecipes = db
+    SkillyDB.trainerRecipes = db
   end
   return db
 end
 
 local function scanDB(create)
-  if type(SkillBuddyDB) ~= "table" then
+  if type(SkillyDB) ~= "table" then
     if not create then return nil end
-    SkillBuddyDB = {}
+    SkillyDB = {}
   end
-  local db = SkillBuddyDB.trainerScans
+  local db = SkillyDB.trainerScans
   if type(db) ~= "table" then
     if not create then return nil end
     db = {}
-    SkillBuddyDB.trainerScans = db
+    SkillyDB.trainerScans = db
   end
   return db
 end
@@ -134,11 +134,11 @@ end
 -- quiet=true is used by the event auto-capture. Trainer service rows can be
 -- published a moment after TRAINER_SHOW, so an early empty read is not an error
 -- and should not print or consume the retry throttle.
-function SkillBuddy.Trainer.Capture(quiet)
+function Skilly.Trainer.Capture(quiet)
   quiet = quiet == true
   if not Internal.TrainerWindowOpen() then
     if not quiet then
-      SkillBuddy.Print("trainer window closed - no recipes captured")
+      Skilly.Print("trainer window closed - no recipes captured")
     end
     return 0, 0
   end
@@ -146,7 +146,7 @@ function SkillBuddy.Trainer.Capture(quiet)
   local serviceCount = Internal.TrainerServiceCount()
   if serviceCount < 1 then
     if not quiet then
-      SkillBuddy.Print("trainer has no service rows yet - wait for the window to finish loading, then run /sb trainer again")
+      Skilly.Print("trainer has no service rows yet - wait for the window to finish loading, then run /skilly trainer again")
     end
     return 0, 0
   end
@@ -197,16 +197,16 @@ function SkillBuddy.Trainer.Capture(quiet)
   end
 
   if not quiet then
-    SkillBuddy.Print("trainer capture: " .. added .. " new, " .. refreshed
+    Skilly.Print("trainer capture: " .. added .. " new, " .. refreshed
         .. " refreshed, " .. unchanged .. " unchanged, " .. skipped .. " skipped (of "
         .. limit .. " rows)")
     for _, row in ipairs(samples) do
-      SkillBuddy.Print("  captured " .. tostring(row.name) .. " - skill "
+      Skilly.Print("  captured " .. tostring(row.name) .. " - skill "
           .. tostring(row.skillRequired) .. ", spellID=" .. tostring(row.spellID)
           .. (row.profession and ", " .. row.profession or ""))
     end
     if added == 0 and refreshed == 0 and unchanged == 0 then
-      SkillBuddy.Print("No usable trainer rows. Run /sb export at a crafting trainer.")
+      Skilly.Print("No usable trainer rows. Run /skilly export at a crafting trainer.")
     end
   end
 
@@ -215,7 +215,7 @@ end
 
 -- Read-only accessor for SB-48. Returns a copy so callers cannot mutate the
 -- SavedVariable, and rejects corrupt rows instead of trusting them.
-function SkillBuddy.Trainer.Recipe(spellID)
+function Skilly.Trainer.Recipe(spellID)
   local id = positiveInteger(spellID, 1, nil)
   if not id then return nil end
 
@@ -238,7 +238,7 @@ function SkillBuddy.Trainer.Recipe(spellID)
   }
 end
 
-function SkillBuddy.Trainer.Count()
+function Skilly.Trainer.Count()
   local db = recipeDB(false)
   if not db then return 0 end
   local count = 0
@@ -248,14 +248,14 @@ end
 
 -- SB-50/SB-52: include trainer state in the copyable feedback export. The
 -- report is bounded so a corrupt or very large SavedVariable cannot flood it.
-function SkillBuddy.Trainer.PrintReport(maxRows)
+function Skilly.Trainer.PrintReport(maxRows)
   local limit = positiveInteger(maxRows, 1, 200) or 60
   local db = recipeDB(false)
 
-  SkillBuddy.Print("trainer capture status: " .. SkillBuddy.Trainer.Count()
+  Skilly.Print("trainer capture status: " .. Skilly.Trainer.Count()
       .. " recipe(s) stored")
 
-  local scans = type(SkillBuddyDB) == "table" and SkillBuddyDB.trainerScans or nil
+  local scans = type(SkillyDB) == "table" and SkillyDB.trainerScans or nil
   if type(scans) == "table" then
     local names = {}
     for name, stamp in pairs(scans) do
@@ -265,7 +265,7 @@ function SkillBuddy.Trainer.PrintReport(maxRows)
     end
     table.sort(names)
     if #names > 0 then
-      SkillBuddy.Print("trainer last scan: " .. table.concat(names, ", "))
+      Skilly.Print("trainer last scan: " .. table.concat(names, ", "))
     end
   end
 
@@ -292,42 +292,42 @@ function SkillBuddy.Trainer.PrintReport(maxRows)
 
   for i = 1, math.min(#rows, limit) do
     local row = rows[i]
-    SkillBuddy.Print("  trainer recipe: " .. tostring(row.name or "recipe")
+    Skilly.Print("  trainer recipe: " .. tostring(row.name or "recipe")
         .. " - skill " .. tostring(row.skill) .. ", spellID=" .. tostring(row.id)
         .. (row.profession and ", " .. row.profession or ""))
   end
   if #rows > limit then
-    SkillBuddy.Print("  ... " .. (#rows - limit) .. " more stored recipe(s)")
+    Skilly.Print("  ... " .. (#rows - limit) .. " more stored recipe(s)")
   end
   if #rows == 0 then
-    SkillBuddy.Print("No trainer recipes stored yet. Open a crafting trainer and run /sb trainer.")
+    Skilly.Print("No trainer recipes stored yet. Open a crafting trainer and run /skilly trainer.")
   end
 end
 
-function SkillBuddy.Trainer.Clear()
-  if type(SkillBuddyDB) ~= "table" then return end
-  SkillBuddyDB.trainerRecipes = {}
-  SkillBuddyDB.trainerScans = {}
-  SkillBuddy.Print("Trainer capture cleared.")
+function Skilly.Trainer.Clear()
+  if type(SkillyDB) ~= "table" then return end
+  SkillyDB.trainerRecipes = {}
+  SkillyDB.trainerScans = {}
+  Skilly.Print("Trainer capture cleared.")
 end
 
-SkillBuddy.RegisterCommand("trainer", function(arg)
+Skilly.RegisterCommand("trainer", function(arg)
   local text = string.gsub(tostring(arg or ""), "^%s+", "")
   text = string.gsub(string.lower(text), "%s+$", "")
 
   if text == "help" then
-    SkillBuddy.Print("Usage: /sb trainer - read the open crafting trainer and store recipe unlock skills.")
-    SkillBuddy.Print("Usage: /sb trainer clear - remove all captured trainer data.")
-    SkillBuddy.Print("Captured trainer recipes: " .. SkillBuddy.Trainer.Count())
+    Skilly.Print("Usage: /skilly trainer - read the open crafting trainer and store recipe unlock skills.")
+    Skilly.Print("Usage: /skilly trainer clear - remove all captured trainer data.")
+    Skilly.Print("Captured trainer recipes: " .. Skilly.Trainer.Count())
     return
   end
   if text == "clear" then
-    SkillBuddy.Trainer.Clear()
+    Skilly.Trainer.Clear()
     return
   end
-  SkillBuddy.Trainer.Capture()
+  Skilly.Trainer.Capture()
 end, {
-  usage = "/sb trainer [clear]",
+  usage = "/skilly trainer [clear]",
   description = "Read the open crafting trainer and store recipe unlock skills.",
 })
 
@@ -342,9 +342,9 @@ local function onTrainerEvent(_, event)
   local now = Internal.CallNumber(_G.GetTime) or 0
   if lastCapture and (now - lastCapture) < 1 then return end
 
-  local ok, added, refreshed = pcall(SkillBuddy.Trainer.Capture, true)
+  local ok, added, refreshed = pcall(Skilly.Trainer.Capture, true)
   if not ok then
-    SkillBuddy.Print("Trainer capture failed: " .. tostring(added))
+    Skilly.Print("Trainer capture failed: " .. tostring(added))
     return
   end
   if (tonumber(added) or 0) + (tonumber(refreshed) or 0) > 0 then

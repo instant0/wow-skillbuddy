@@ -1,15 +1,15 @@
 --[[---------------------------------------------------------------------------------
-  SkillBuddy - by faslkjd56
+  Skilly - by faslkjd56
   WoW Forever 1.60.1 craft advisor
   Scan.lua - profession and trainer snapshots
 ------------------------------------------------------------------------------------]]
 
-SkillBuddy = SkillBuddy or {}
-SkillBuddy.Internal = SkillBuddy.Internal or {}
-local Internal = SkillBuddy.Internal
+Skilly = Skilly or {}
+Skilly.Internal = Skilly.Internal or {}
+local Internal = Skilly.Internal
 
 -- SB-06: normalized snapshot of the open trade-skill window.
-SkillBuddy.Scan = SkillBuddy.Scan or {}
+Skilly.Scan = Skilly.Scan or {}
 
 
 
@@ -27,7 +27,7 @@ end
 -- SB-32: one canonical key for manual prices and the as-if-owned list.
 -- Item IDs win; otherwise use the trimmed, lower-case name. Links without an
 -- item ID are treated as a name copied from the link text.
-function SkillBuddy.NormalizeItemKey(value)
+function Skilly.NormalizeItemKey(value)
   if type(value) ~= "string" then return nil end
   value = string.gsub(value, "^%s+", "")
   value = string.gsub(value, "%s+$", "")
@@ -164,7 +164,7 @@ end
 -- says it is available at the current skill. The client still supplies the
 -- schematic/reagents, so it can be priced like any other recipe.
 local function trainerLearnRow(recipeID, skill, professionName)
-  local trainer = SkillBuddy.Trainer
+  local trainer = Skilly.Trainer
   if type(trainer) ~= "table" or type(trainer.Recipe) ~= "function" then return nil end
   local ok, row = pcall(trainer.Recipe, recipeID)
   if not ok or type(row) ~= "table" then return nil end
@@ -250,7 +250,7 @@ local function scanCurrentModern()
                   difficulty = difficulty,
                   link = link,
                   -- Forever's recipeID is the SkillLineAbility `Spell` value,
-                  -- which is the key used by SkillBuddy.Thresholds.
+                  -- which is the key used by Skilly.Thresholds.
                   spellID = recipeID,
                   reagents = reagents,
                   madeMin = madeMin,
@@ -354,16 +354,16 @@ local function scanCurrentClassic()
   return snapshot
 end
 
-function SkillBuddy.Scan.Current()
-  SkillBuddy.ResetSourceCache()
+function Skilly.Scan.Current()
+  Skilly.ResetSourceCache()
 
   local modern = scanCurrentModern()
   if modern then
-    SkillBuddy.lastSnapshot = modern
+    Skilly.lastSnapshot = modern
     return modern
   end
 
   local classic = scanCurrentClassic()
-  if classic then SkillBuddy.lastSnapshot = classic end
+  if classic then Skilly.lastSnapshot = classic end
   return classic
 end

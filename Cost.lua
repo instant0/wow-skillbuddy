@@ -1,33 +1,42 @@
 --[[---------------------------------------------------------------------------------
-  SkillBuddy - by faslkjd56
+  Skilly - by faslkjd56
   WoW Forever 1.60.1 craft advisor
   Cost.lua - material costing and availability
 ------------------------------------------------------------------------------------]]
 
-SkillBuddy = SkillBuddy or {}
-SkillBuddy.Internal = SkillBuddy.Internal or {}
-local Internal = SkillBuddy.Internal
+Skilly = Skilly or {}
+Skilly.Internal = Skilly.Internal or {}
+local Internal = Skilly.Internal
 
--- SB-07: owned item counts. SkillBuddy reads the player's own bags itself;
+-- SB-43: call-site guard. A missing or broken registry never changes advice.
+local function featureEnabled(key, default)
+  if type(Skilly.FeatureEnabled) ~= "function" then return default end
+  local ok, value = pcall(Skilly.FeatureEnabled, key, default)
+  if ok and type(value) == "boolean" then return value end
+  return default
+end
+
+-- SB-07: owned item counts. Skilly reads the player's own bags itself;
 -- optional sources only answer for stock outside them.
-SkillBuddy.Cost = SkillBuddy.Cost or {}
+Skilly.Cost = Skilly.Cost or {}
 
 local itemCountCache = {}
-if type(SkillBuddy.RegisterReset) == "function" then
-  SkillBuddy.RegisterReset(function() itemCountCache = {} end)
+if type(Skilly.RegisterReset) == "function" then
+  Skilly.RegisterReset(function() itemCountCache = {} end)
 end
 
 -- SB-32: default-on availability flag. Explicit false is the only opt-out.
-function SkillBuddy.Cost.AssumePurchasable()
-  local db = type(SkillBuddyDB) == "table" and SkillBuddyDB or nil
+function Skilly.Cost.AssumePurchasable()
+  local db = type(SkillyDB) == "table" and SkillyDB or nil
   if not db then return true end
   return db.assumePurchasable ~= false
 end
 
 -- SB-32: a curated free material. Wrong types and non-boolean values are not
 -- treated as entries so a corrupt SavedVariable cannot silently change advice.
-function SkillBuddy.Cost.IsAsIfOwned(reagentOrKey)
-  local db = type(SkillBuddyDB) == "table" and SkillBuddyDB.asIfOwned or nil
+function Skilly.Cost.IsAsIfOwned(reagentOrKey)
+  if not featureEnabled("useAsIfOwned", true) then return false end
+  local db = type(SkillyDB) == "table" and SkillyDB.asIfOwned or nil
   if type(db) ~= "table" then return false end
 
   local key = reagentOrKey
@@ -36,15 +45,15 @@ function SkillBuddy.Cost.IsAsIfOwned(reagentOrKey)
   return db[key] == true
 end
 
-local function countFromClient(key, link, itemID, name)
+local function countFromClient(key, link, itemID, name, includeBank)
   local candidates = {}
   if itemID then candidates[#candidates + 1] = itemID end
   if type(link) == "string" and link ~= "" then candidates[#candidates + 1] = link end
   if type(name) == "string" and name ~= "" then candidates[#candidates + 1] = name end
 
-  local includeBank = SkillBuddyDB and SkillBuddyDB.includeBank == true
+  local wantBank = includeBank == true
   for _, identifier in ipairs(candidates) do
-    local results = Internal.SafeResults("GetItemCount", identifier, includeBank)
+    local results = Internal.SafeResults("GetItemCount", identifier, wantBank)
     local value = results and tonumber(results[1]) or nil
     if value and value > 0 then return math.floor(value) end
   end
@@ -77,7 +86,13 @@ local function countInBags(itemID, name)
   return total
 end
 
-function SkillBuddy.Cost.ItemCount(reagent)
+local function positiveCount(value)
+  local n = tonumber(value)
+  if not n or n <= 0 then return 0 end
+  return math.floor(n)
+end
+
+function Skilly.Cost.ItemCount(reagent)
   if type(reagent) ~= "table" then return 0 end
 
   local key = reagent.key
@@ -93,17 +108,39 @@ function SkillBuddy.Cost.ItemCount(reagent)
   local cached = itemCountCache[key]
   if cached ~= nil then return cached end
 
-  local count = countFromClient(key, link, itemID, name)
-  if not count then
-    count = SkillBuddy.SourceValue("count", key, link, itemID)
-  end
-  if not count or count <= 0 then
-    count = countInBags(itemID, name)
+  local includeBank = SkillyDB and SkillyDB.includeBank == true
+  local bank = Skilly.Bank
+  local bankInfo = includeBank and type(bank) == "table"
+      and type(bank.Info) == "function" and bank.Info() or nil
+  local hasFreshBank = type(bankInfo) == "table" and bankInfo.fresh == true
+
+  local count = nil
+  if hasFreshBank then
+    -- Fresh cache: bags-only client count + cached player bank count. Skip
+    -- SourceValue("count", ...) so external bank/mail/guild sources cannot be
+    -- double-counted with the bank snapshot.
+    local bags = countFromClient(key, link, itemID, name, false)
+    if not bags or bags <= 0 then bags = countInBags(itemID, name) end
+    bags = positiveCount(bags)
+
+    local bankCount = 0
+    if type(bank.Count) == "function" then
+      local okBank, value = pcall(bank.Count, key)
+      if okBank then bankCount = positiveCount(value) end
+    end
+    count = bags + bankCount
+  else
+    -- No fresh cache: preserve exact legacy path and source precedence.
+    count = countFromClient(key, link, itemID, name, includeBank)
+    if not count then
+      count = Skilly.SourceValue("count", key, link, itemID)
+    end
+    if not count or count <= 0 then
+      count = countInBags(itemID, name)
+    end
+    count = positiveCount(count)
   end
 
-  count = tonumber(count) or 0
-  if count < 0 then count = 0 end
-  count = math.floor(count)
   itemCountCache[key] = count
   return count
 end
@@ -131,11 +168,11 @@ end
 
 -- Real bag/bank count, upgraded to "fully covered" for as-if entries.
 local function ownedForAvailability(reagent, key, required)
-  local owned = tonumber(SkillBuddy.Cost.ItemCount(reagent)) or 0
+  local owned = tonumber(Skilly.Cost.ItemCount(reagent)) or 0
   if owned < 0 then owned = 0 end
   owned = math.floor(owned)
 
-  local asIf = key ~= "" and SkillBuddy.Cost.IsAsIfOwned(key) == true
+  local asIf = key ~= "" and Skilly.Cost.IsAsIfOwned(key) == true
   if asIf and owned < required then owned = required end
   return owned, asIf
 end
@@ -167,7 +204,7 @@ local function analyzeReagents(recipe)
         local need = required - owned
         if need < 0 then need = 0 end
 
-        local price, source = SkillBuddy.Cost.PriceFor(reagent)
+        local price, source = Skilly.Cost.PriceFor(reagent)
         price = tonumber(price)
         if not price or price < 0 then price = 0 end
         local reliable = hasReliablePrice(source)
@@ -229,7 +266,7 @@ local function fullMaterialRows(recipe)
   return full, worst
 end
 
-function SkillBuddy.Cost.FullMissing(recipe)
+function Skilly.Cost.FullMissing(recipe)
   local rows, worst = fullMaterialRows(recipe)
   if type(recipe) == "table" then
     if rows and type(worst) == "string" then recipe.sourceGrade = worst end
@@ -240,7 +277,7 @@ end
 
 -- SB-38: cheapest reliable price wins; the source only breaks exact ties.
 -- Manual prices are handled first so they always beat automatic candidates.
-function SkillBuddy.Cost.PriceFor(reagent)
+function Skilly.Cost.PriceFor(reagent)
   if type(reagent) ~= "table" then return 1, "default" end
 
   local key = Internal.ReagentKey(reagent)
@@ -248,8 +285,9 @@ function SkillBuddy.Cost.PriceFor(reagent)
   local name = type(reagent.name) == "string" and string.lower(reagent.name) or nil
   local itemID = Internal.NumericItemID(key, link, reagent.itemID)
 
-  local db = type(SkillBuddyDB) == "table" and SkillBuddyDB or nil
-  if db and type(db.prices) == "table" and key ~= "" then
+  local db = type(SkillyDB) == "table" and SkillyDB or nil
+  if featureEnabled("useManualPrices", true)
+      and db and type(db.prices) == "table" and key ~= "" then
     local manual = tonumber(db.prices[key])
     if manual and manual >= 0 then return manual, "manual" end
   end
@@ -264,19 +302,20 @@ function SkillBuddy.Cost.PriceFor(reagent)
     end
   end
 
-  if SkillBuddy.Cost.IsAsIfOwned(key ~= "" and key or reagent) then
+  if Skilly.Cost.IsAsIfOwned(key ~= "" and key or reagent) then
     consider(0, "as-if", 0)
   end
 
-  if itemID and type(SkillBuddy.VendorPrices) == "table" then
-    consider(SkillBuddy.VendorPrices[itemID], "vendor", 1)
+  if featureEnabled("useVendorPrices", true)
+      and itemID and type(Skilly.VendorPrices) == "table" then
+    consider(Skilly.VendorPrices[itemID], "vendor", 1)
   end
 
   if key ~= "" then
-    for _, candidate in ipairs(SkillBuddy.SourceCandidates("vendorPrice", key, link, itemID)) do
+    for _, candidate in ipairs(Skilly.SourceCandidates("vendorPrice", key, link, itemID)) do
       consider(candidate.value, "vendor", 1)
     end
-    for _, candidate in ipairs(SkillBuddy.SourceCandidates("price", key, link, itemID)) do
+    for _, candidate in ipairs(Skilly.SourceCandidates("price", key, link, itemID)) do
       local label = candidate.name
       local rank = 4
       if label == "auctionator" or label == "auctioneer" then
@@ -294,14 +333,14 @@ end
 
 -- SB-39: same lookup plus confidence. "default" means no reliable price was
 -- found, so ranking must use a scarcity estimate instead of the copper value.
-function SkillBuddy.Cost.PriceInfo(reagent)
-  local price, source = SkillBuddy.Cost.PriceFor(reagent)
+function Skilly.Cost.PriceInfo(reagent)
+  local price, source = Skilly.Cost.PriceFor(reagent)
   return price, source, source ~= "default"
 end
 
 -- SB-10: cost for one craft. Only missing units are charged in `total`;
 -- `fullCost` prices every required unit for comparison.
-function SkillBuddy.Cost.Recipe(recipe)
+function Skilly.Cost.Recipe(recipe)
   local result = { total = 0, fullCost = 0, detail = {} }
   if type(recipe) ~= "table" or type(recipe.reagents) ~= "table" then
     return result
@@ -318,7 +357,7 @@ function SkillBuddy.Cost.Recipe(recipe)
       local need = required - owned
       if need < 0 then need = 0 end
 
-      local price, source = SkillBuddy.Cost.PriceFor(reagent)
+      local price, source = Skilly.Cost.PriceFor(reagent)
       price = tonumber(price) or 1
       if price < 0 then price = 0 end
 
@@ -343,7 +382,7 @@ end
 
 -- SB-12: how many complete crafts the player can do with materials already
 -- available (real stock plus as-if entries). Output quantity is not applied.
-function SkillBuddy.Cost.Craftable(recipe)
+function Skilly.Cost.Craftable(recipe)
   if type(recipe) ~= "table" or type(recipe.reagents) ~= "table" then
     if type(recipe) == "table" then recipe.unknownReagent = true end
     return 0
@@ -377,7 +416,7 @@ end
 
 -- SB-12/SB-46: only reagents with a real shortfall are "missing"; sourceGrade
 -- summarizes the whole recipe so SB-13 can prefer vendor/on-hand materials.
-function SkillBuddy.Cost.Missing(recipe)
+function Skilly.Cost.Missing(recipe)
   local rows, unknown, worst = analyzeReagents(recipe)
   if type(recipe) == "table" then
     recipe.sourceGrade = worst
@@ -393,7 +432,7 @@ end
 
 -- SB-12: on-hand, as-if, and purchasable-with-a-real-price all count when the
 -- assumePurchasable setting is on. A fallback price of 1 never counts.
-function SkillBuddy.Cost.Obtainable(recipe)
+function Skilly.Cost.Obtainable(recipe)
   local rows, unknown, worst = analyzeReagents(recipe)
   if type(recipe) == "table" then
     recipe.sourceGrade = worst
@@ -401,9 +440,13 @@ function SkillBuddy.Cost.Obtainable(recipe)
   end
   if unknown or #rows == 0 then return false end
 
-  local assume = SkillBuddy.Cost.AssumePurchasable()
+  local assume = Skilly.Cost.AssumePurchasable()
+  local allowMarket = featureEnabled("allowAHMaterials", true)
   for _, row in ipairs(rows) do
     if row.need > 0 and (not assume or not row.hasPrice) then
+      return false
+    end
+    if row.need > 0 and not allowMarket and row.grade == "market" then
       return false
     end
   end

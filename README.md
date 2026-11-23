@@ -1,4 +1,4 @@
-# SkillBuddy (development README)
+# Skilly (development README)
 
 WoW Forever 1.60.1 craft advisor. `Interface: 16001`. Author: `faslkjd56`.
 
@@ -20,26 +20,26 @@ intermediate feature work.
 ## Current status
 
 Version **0.3.1**. Test build. The recommendation engine is now real:
-`SkillBuddy.Recommend` scans the open profession, ranks recipes in `best` or
+`Skilly.Recommend` scans the open profession, ranks recipes in `best` or
 `cheap` mode, and prints explanations plus up to three runners-up through the
-chat formatter. `/sb help <cmd>`, `/sb prices`, and `/sb debug` are available.
+chat formatter. `/skilly help <cmd>`, `/skilly prices`, and `/skilly debug` are available.
 
-Use `/sb export` to collect feedback from the live client. It prints the same
+Use `/skilly export` to collect feedback from the live client. It prints the same
 report to chat and also opens a pre-highlighted multiline EditBox so the user
 can press Ctrl+C. The probe now reports both trade-skill API families, trainer
 API presence, and a closed-trainer message without opening any window.
-Trainer capture and unlock hints are not implemented yet, so SkillBuddy has no
+Trainer capture and unlock hints are not implemented yet, so Skilly has no
 recipe-availability data.
 
 ## Layout
 
 | File | Role |
 |---|---|
-| `SkillBuddy.toc` | Load order, interface version, saved variables, version |
+| `Skilly.toc` | Load order, interface version, saved variables, version |
 | `Data.lua` | Bundled game data: thresholds, vendor prices, material pressure, difficulty bands |
 | `Core.lua` | Command registry, probe, scanner, price sources, cost, probability, ranking helpers |
 | `UI.lua` | Copyable export window, result-window hook, binding-button placeholder |
-| `SkillBuddy.lua` | Settings page, `/sb` commands, bootstrap |
+| `Skilly.lua` | Settings page, `/skilly` commands, bootstrap |
 | `Bindings.xml` | Keybinding target |
 | `README.txt` | User-facing readme (shipped) |
 | `README.md` | This file (not shipped) |
@@ -47,7 +47,7 @@ recipe-availability data.
 | `TASKS.md` | Pending-task priority list (not shipped) |
 
 Task priorities are in `TASKS.md`; design decisions are in
-`plans/skillbuddy.md`. `tests/`, `tasks/`, and `plans/` are gitignored. None of
+`plans/skilly.md`. `tests/`, `tasks/`, and `plans/` are gitignored. None of
 these development files are shipped.
 
 ## Design rules
@@ -92,23 +92,23 @@ tiny committed tests are `tests/rank_test.lua` and `tests/load_test.lua`.
 
 ## Build
 
-Copy **only** these files into a folder named `SkillBuddy`:
+Copy **only** these files into a folder named `Skilly`:
 
 ```
-SkillBuddy.toc  Data.lua  Core.lua  UI.lua  SkillBuddy.lua  Bindings.xml  README.txt
+Skilly.toc  Data.lua  Core.lua  UI.lua  Skilly.lua  Bindings.xml  README.txt
 ```
 
 Exclude: `README.md`, `AGENTS.md`, `TASKS.md`, `tests/`, `tasks/`, `plans/`,
-`docs/`, `.agent/`, `.gitignore`, `.git/`.
+`.agent/`, `.gitignore`, `.git/`.
 
-The current build target is `/mnt/r/SkillBuddy/`.
+The current build target is `/mnt/r/Skilly/`.
 
 ## Version history
 
 - 0.1.0 — scaffolding.
 - 0.2.0 — thresholds, cheapest-price resolution, scarcity helpers, extended
   vendor/pressure data, settings and commands; recommendations still pending.
-- 0.3.0 — two-mode ranker, explanation strings, chat output, real `/sb help`,
-  `Recommend` wiring, `/sb debug`, and the two committed tests.
-- 0.3.1 — `/sb export` copyable feedback window, bounded output log, expanded
+- 0.3.0 — two-mode ranker, explanation strings, chat output, real `/skilly help`,
+  `Recommend` wiring, `/skilly debug`, and the two committed tests.
+- 0.3.1 — `/skilly export` copyable feedback window, bounded output log, expanded
   profession/trainer probe, and `evidence:` debug lines with spell ID/color.

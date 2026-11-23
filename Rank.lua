@@ -1,18 +1,26 @@
 --[[---------------------------------------------------------------------------------
-  SkillBuddy - by faslkjd56
+  Skilly - by faslkjd56
   WoW Forever 1.60.1 craft advisor
   Rank.lua - recommendation ranking and explanations
 ------------------------------------------------------------------------------------]]
 
-SkillBuddy = SkillBuddy or {}
-SkillBuddy.Internal = SkillBuddy.Internal or {}
-local Internal = SkillBuddy.Internal
+Skilly = Skilly or {}
+Skilly.Internal = Skilly.Internal or {}
+local Internal = Skilly.Internal
 
 -- SB-09: per-craft skill-up chance, driven by the client's recipe color.
-SkillBuddy.Rank = SkillBuddy.Rank or {}
+Skilly.Rank = Skilly.Rank or {}
+
+-- SB-43: every ranking/output toggle goes through the safe registry lookup.
+local function featureEnabled(key, default)
+  if type(Skilly.FeatureEnabled) ~= "function" then return default end
+  local ok, value = pcall(Skilly.FeatureEnabled, key, default)
+  if ok and type(value) == "boolean" then return value end
+  return default
+end
 
 local function learnedThresholds(recipeKey)
-  local db = type(SkillBuddyCharDB) == "table" and SkillBuddyCharDB.learned or nil
+  local db = type(SkillyCharDB) == "table" and SkillyCharDB.learned or nil
   if type(db) ~= "table" or type(recipeKey) ~= "string" then return nil end
   local entry = db[recipeKey]
   if type(entry) ~= "table" then return nil end
@@ -35,7 +43,7 @@ end
 
 -- SB-37: bundled values are factual game data keyed by the recipe spell ID.
 local function bundledThresholds(recipe)
-  local tableData = SkillBuddy.Thresholds
+  local tableData = Skilly.Thresholds
   if type(tableData) ~= "table" or type(recipe) ~= "table" then return nil end
 
   local id = tonumber(recipe.spellID) or Internal.SpellIDFromLink(recipe.link)
@@ -65,7 +73,7 @@ local function thresholdsFor(recipe)
   return nil, nil, "estimate"
 end
 
-function SkillBuddy.Rank.Probability(recipe, skill, maxSkill)
+function Skilly.Rank.Probability(recipe, skill, maxSkill)
   if type(recipe) ~= "table" then return 0 end
   recipe.thresholdSource = "color"
 
@@ -76,7 +84,7 @@ function SkillBuddy.Rank.Probability(recipe, skill, maxSkill)
     return 0
   end
 
-  local detect = SkillBuddy.Difficulty and SkillBuddy.Difficulty.Detect
+  local detect = Skilly.Difficulty and Skilly.Difficulty.Detect
   if type(detect) ~= "function" then
     recipe.estimate = true
     recipe.thresholdSource = "estimate"
@@ -120,7 +128,7 @@ end
 -- SB-39: scarcity estimate for one missing unit when no reliable price exists.
 -- Runtime item metadata is preferred; the small static table fills gaps when
 -- GetItemInfo has no cached data. Never errors on bad items or missing APIs.
-function SkillBuddy.Rank.UnitPressure(reagent)
+function Skilly.Rank.UnitPressure(reagent)
   local detail = {
     tier = 2, ease = 1, kind = "unknown", crossSkill = false, sourceSkill = nil,
   }
@@ -128,15 +136,15 @@ function SkillBuddy.Rank.UnitPressure(reagent)
 
   local key = reagent.key
   if type(key) ~= "string" or key == "" then
-    key = SkillBuddy.NormalizeItemKey(reagent.link)
-        or SkillBuddy.NormalizeItemKey(reagent.name)
+    key = Skilly.NormalizeItemKey(reagent.link)
+        or Skilly.NormalizeItemKey(reagent.name)
         or ""
   end
   local itemID = Internal.NumericItemID(key, reagent.link, reagent.itemID)
 
   local fallback = nil
-  if itemID and type(SkillBuddy.MaterialPressure) == "table" then
-    fallback = SkillBuddy.MaterialPressure[itemID]
+  if itemID and type(Skilly.MaterialPressure) == "table" then
+    fallback = Skilly.MaterialPressure[itemID]
     if type(fallback) ~= "table" then fallback = nil end
   end
 
@@ -158,7 +166,7 @@ function SkillBuddy.Rank.UnitPressure(reagent)
   if tier < 1 then tier = 1 elseif tier > 8 then tier = 8 end
   detail.tier = tier
 
-  local base = 2 ^ (tier - 1)
+  local base = featureEnabled("useTierWeight", true) and (2 ^ (tier - 1)) or 1
   local kind = fallback and fallback.kind or nil
   local ease = 1
   if fallback then
@@ -193,7 +201,7 @@ function SkillBuddy.Rank.UnitPressure(reagent)
   detail.kind = kind or "unknown"
 
   local itemRarity = rarity or (fallback and tonumber(fallback.rarity) or nil)
-  if itemRarity and itemRarity >= 2 then
+  if featureEnabled("useRarity", true) and itemRarity and itemRarity >= 2 then
     ease = ease * (itemRarity * 3)
   end
 
@@ -215,8 +223,9 @@ function SkillBuddy.Rank.UnitPressure(reagent)
     end
   end
 
-  local profession = SkillBuddy.lastSnapshot and SkillBuddy.lastSnapshot.profession or nil
-  if sourceSkill and type(profession) == "string" and profession ~= ""
+  local profession = Skilly.lastSnapshot and Skilly.lastSnapshot.profession or nil
+  if featureEnabled("useCrossSkill", true) and sourceSkill
+      and type(profession) == "string" and profession ~= ""
       and string.lower(profession) ~= string.lower(sourceSkill) then
     detail.crossSkill = true
     ease = ease * 3
@@ -231,7 +240,7 @@ end
 
 -- SB-39: ranking cost. Known prices stay literal; unknown prices get a
 -- scarcity estimate so rare materials no longer look like 1 copper.
-function SkillBuddy.Rank.EffectiveCost(recipe)
+function Skilly.Rank.EffectiveCost(recipe)
   local info = { effectiveCost = 0, knownCost = 0, estimatedCost = 0, reagents = {} }
   if type(recipe) ~= "table" then return info end
 
@@ -242,14 +251,19 @@ function SkillBuddy.Rank.EffectiveCost(recipe)
         if required < 0 then required = 0 end
         required = math.floor(required)
 
-        local owned = SkillBuddy.Cost.ItemCount(reagent)
+        local owned = Skilly.Cost.ItemCount(reagent)
         local need = required - owned
         if need < 0 then need = 0 end
 
-        local price, source, known = SkillBuddy.Cost.PriceInfo(reagent)
+        local price, source, known = Skilly.Cost.PriceInfo(reagent)
         local unitCost, costKind, pressure = price, "known", nil
         if not known then
-          unitCost, pressure = SkillBuddy.Rank.UnitPressure(reagent)
+          if featureEnabled("useScarcity", true) then
+            unitCost, pressure = Skilly.Rank.UnitPressure(reagent)
+          else
+            unitCost, pressure = 1, nil
+            source = "default"
+          end
           costKind = "estimated"
         end
         unitCost = tonumber(unitCost) or 1
@@ -298,14 +312,17 @@ end
 -- override lets SB-48's bounded observation change the denominator without
 -- changing the reported color probability. With no override this is identical
 -- to effectiveCost / p, so existing callers are unaffected.
-function SkillBuddy.Rank.Score(recipe, skill, maxSkill, craftsPerPoint)
-  local info = SkillBuddy.Rank.EffectiveCost(recipe)
-  local probability = SkillBuddy.Rank.Probability(recipe, skill, maxSkill)
+function Skilly.Rank.Score(recipe, skill, maxSkill, craftsPerPoint)
+  local info = Skilly.Rank.EffectiveCost(recipe)
+  local probability = Skilly.Rank.Probability(recipe, skill, maxSkill)
   info.probability = probability
   if not probability or probability <= 0 then return math.huge, info end
 
-  local crafts = tonumber(craftsPerPoint)
-  if not crafts or crafts <= 0 then crafts = 1 / probability end
+  local crafts = 1
+  if featureEnabled("useProbability", true) then
+    crafts = tonumber(craftsPerPoint)
+    if not crafts or crafts <= 0 then crafts = 1 / probability end
+  end
   info.craftsPerPoint = crafts
   return info.effectiveCost * crafts, info
 end
@@ -313,15 +330,15 @@ end
 -- SB-54: full-material ranking cost. Unlike EffectiveCost, this prices every
 -- required unit and refuses to guess when any required reagent has no reliable
 -- price. Owned stock is reported, not credited.
-function SkillBuddy.Rank.FullEffectiveCost(recipe)
+function Skilly.Rank.FullEffectiveCost(recipe)
   local info = {
     effectiveCost = 0, knownCost = 0, estimatedCost = 0,
     reagents = {}, invalid = false,
   }
 
   local rows
-  if type(SkillBuddy.Cost.FullMissing) == "function" then
-    rows = SkillBuddy.Cost.FullMissing(recipe)
+  if type(Skilly.Cost.FullMissing) == "function" then
+    rows = Skilly.Cost.FullMissing(recipe)
   else
     rows = fullMaterialRows(recipe)
   end
@@ -358,35 +375,28 @@ end
 
 -- SB-54: cost per expected skill point on the full-material basis. Uses the
 -- same observed/color denominator as Score so only the cost basis changes.
-function SkillBuddy.Rank.FullScore(recipe, skill, maxSkill, craftsPerPoint)
-  local info = SkillBuddy.Rank.FullEffectiveCost(recipe)
-  local probability = SkillBuddy.Rank.Probability(recipe, skill, maxSkill)
+function Skilly.Rank.FullScore(recipe, skill, maxSkill, craftsPerPoint)
+  local info = Skilly.Rank.FullEffectiveCost(recipe)
+  local probability = Skilly.Rank.Probability(recipe, skill, maxSkill)
   info.probability = probability
   if info.invalid or not probability or probability <= 0 then
     return math.huge, info
   end
 
-  local crafts = tonumber(craftsPerPoint)
-  if not crafts or crafts <= 0 then crafts = 1 / probability end
+  local crafts = 1
+  if featureEnabled("useProbability", true) then
+    crafts = tonumber(craftsPerPoint)
+    if not crafts or crafts <= 0 then crafts = 1 / probability end
+  end
   info.craftsPerPoint = crafts
   return info.effectiveCost * crafts, info
-end
-
--- SB-43/SB-54: read the future central feature registry when it exists, but
--- never create a setting here. Absent or malformed values use a safe default.
-local function featureEnabled(key, default)
-  if type(SkillBuddy.FeatureEnabled) == "function" then
-    local ok, value = pcall(SkillBuddy.FeatureEnabled, key, default)
-    if ok and type(value) == "boolean" then return value end
-  end
-  return default
 end
 
 local function ahMaterialsAllowed()
   return featureEnabled("allowAHMaterials", true)
 end
 
-function SkillBuddy.Rank.FullCostEnabled()
+function Skilly.Rank.FullCostEnabled()
   return featureEnabled("showFullCostRecommendation", true)
 end
 
@@ -402,7 +412,7 @@ local function expectedCraftsFor(recipe, skill, p)
     return display, source, denominator
   end
 
-  local observe = SkillBuddy.Observe
+  local observe = Skilly.Observe
   if p > 0 and p < 1 and type(observe) == "table"
       and type(observe.ExpectedCrafts) == "function" then
     local ok, observed, observedSource = pcall(observe.ExpectedCrafts, recipe, skill, p)
@@ -422,12 +432,12 @@ end
 
 -- SB-13/SB-54: one ranker for both modes and both cost bases. Entries never
 -- mutate saved variables.
-function SkillBuddy.Rank.Best(snapshot, mode, costBasis)
+function Skilly.Rank.Best(snapshot, mode, costBasis)
   local results = {}
   local meta = {}
   local full = costBasis == "full"
-  if full and type(SkillBuddy.Rank.FullCostEnabled) == "function"
-      and SkillBuddy.Rank.FullCostEnabled() ~= true then
+  if full and type(Skilly.Rank.FullCostEnabled) == "function"
+      and Skilly.Rank.FullCostEnabled() ~= true then
     return results
   end
   if type(snapshot) ~= "table" or type(snapshot.recipes) ~= "table" then
@@ -439,7 +449,7 @@ function SkillBuddy.Rank.Best(snapshot, mode, costBasis)
   local cheap = mode ~= "best"
   local allowAH = ahMaterialsAllowed()
 
-  local db = type(SkillBuddyDB) == "table" and SkillBuddyDB or nil
+  local db = type(SkillyDB) == "table" and SkillyDB or nil
   local ignored = db and type(db.ignored) == "table" and db.ignored or nil
   local limit = db and tonumber(db.resultCount) or 5
   limit = math.floor(limit)
@@ -453,30 +463,30 @@ function SkillBuddy.Rank.Best(snapshot, mode, costBasis)
 
       if not skip then
         local p = 0
-        if type(SkillBuddy.Rank.Probability) == "function" then
-          p = tonumber(SkillBuddy.Rank.Probability(recipe, skill, maxSkill)) or 0
+        if type(Skilly.Rank.Probability) == "function" then
+          p = tonumber(Skilly.Rank.Probability(recipe, skill, maxSkill)) or 0
         end
         if p <= 0 then skip = true end
 
         if not skip and cheap then
-          if type(SkillBuddy.Cost.Obtainable) ~= "function"
-              or SkillBuddy.Cost.Obtainable(recipe) ~= true then
+          if type(Skilly.Cost.Obtainable) ~= "function"
+              or Skilly.Cost.Obtainable(recipe) ~= true then
             skip = true
           end
         end
 
         local fullRows = nil
         if not skip and full then
-          if type(SkillBuddy.Cost.FullMissing) == "function" then
-            fullRows = SkillBuddy.Cost.FullMissing(recipe)
+          if type(Skilly.Cost.FullMissing) == "function" then
+            fullRows = Skilly.Cost.FullMissing(recipe)
           end
           if type(fullRows) ~= "table" or #fullRows == 0 then skip = true end
         end
 
         if not skip then
           local missing = fullRows or {}
-          if not full and type(SkillBuddy.Cost.Missing) == "function" then
-            local rows = SkillBuddy.Cost.Missing(recipe)
+          if not full and type(Skilly.Cost.Missing) == "function" then
+            local rows = Skilly.Cost.Missing(recipe)
             if type(rows) == "table" then missing = rows end
           end
           local grade = type(recipe.sourceGrade) == "string"
@@ -487,13 +497,13 @@ function SkillBuddy.Rank.Best(snapshot, mode, costBasis)
 
           if not skip then
             local costInfo = {}
-            if type(SkillBuddy.Cost.Recipe) == "function" then
-              local info = SkillBuddy.Cost.Recipe(recipe)
+            if type(Skilly.Cost.Recipe) == "function" then
+              local info = Skilly.Cost.Recipe(recipe)
               if type(info) == "table" then costInfo = info end
             end
             local craftable = 0
-            if type(SkillBuddy.Cost.Craftable) == "function" then
-              craftable = tonumber(SkillBuddy.Cost.Craftable(recipe)) or 0
+            if type(Skilly.Cost.Craftable) == "function" then
+              craftable = tonumber(Skilly.Cost.Craftable(recipe)) or 0
             end
             if craftable < 0 then craftable = 0 end
             craftable = math.floor(craftable)
@@ -502,8 +512,8 @@ function SkillBuddy.Rank.Best(snapshot, mode, costBasis)
             local override = source == "observed" and denominator or nil
             local score, info = math.huge, {}
             if full then
-              if type(SkillBuddy.Rank.FullScore) == "function" then
-                local value, details = SkillBuddy.Rank.FullScore(
+              if type(Skilly.Rank.FullScore) == "function" then
+                local value, details = Skilly.Rank.FullScore(
                     recipe, skill, maxSkill, override)
                 score = tonumber(value) or math.huge
                 if type(details) == "table" then info = details end
@@ -513,8 +523,8 @@ function SkillBuddy.Rank.Best(snapshot, mode, costBasis)
                 if crafts <= 0 then crafts = 1 end
                 score = (tonumber(costInfo.fullCost) or 0) * crafts
               end
-            elseif type(SkillBuddy.Rank.Score) == "function" then
-              local value, details = SkillBuddy.Rank.Score(recipe, skill, maxSkill, override)
+            elseif type(Skilly.Rank.Score) == "function" then
+              local value, details = Skilly.Rank.Score(recipe, skill, maxSkill, override)
               score = tonumber(value) or math.huge
               if type(details) == "table" then info = details end
             end
@@ -582,14 +592,14 @@ end
 
 -- SB-54: a separate entry point so partial builds cannot mistake the primary
 -- result for a full-material-cost result.
-function SkillBuddy.Rank.BestFull(snapshot, mode)
-  if type(SkillBuddy.Rank.FullCostEnabled) == "function"
-      and SkillBuddy.Rank.FullCostEnabled() ~= true then
+function Skilly.Rank.BestFull(snapshot, mode)
+  if type(Skilly.Rank.FullCostEnabled) == "function"
+      and Skilly.Rank.FullCostEnabled() ~= true then
     return {}
   end
-  if type(SkillBuddy.Rank.Best) ~= "function" then return {} end
+  if type(Skilly.Rank.Best) ~= "function" then return {} end
 
-  local ok, results = pcall(SkillBuddy.Rank.Best, snapshot, mode, "full")
+  local ok, results = pcall(Skilly.Rank.Best, snapshot, mode, "full")
   if ok and type(results) == "table" then return results end
   return {}
 end
@@ -616,6 +626,90 @@ local function formatCount(value)
   return string.format("%.1f", n)
 end
 
+-- SB-42: informational phase 1. These helpers never touch the rank score,
+-- SavedVariables, or any other addon's data.
+local function normalizedItemName(value)
+  if type(value) ~= "string" then return nil end
+  local name = string.lower(value)
+  name = string.gsub(name, "^%s+", "")
+  name = string.gsub(name, "%s+$", "")
+  if name == "" then return nil end
+  return name
+end
+
+local function disenchantHint(recipe)
+  if not featureEnabled("useSynergy", false) then return nil end
+  if type(recipe) ~= "table" then return nil end
+  local targets = Skilly.DisenchantTargets
+  if type(targets) ~= "table" then return nil end
+  local name = normalizedItemName(recipe.name)
+  if not name then return nil end
+  local dust = targets[name]
+  if type(dust) ~= "string" or dust == "" then return nil end
+  return "synergy: can supply " .. dust .. " for Enchanting"
+end
+
+local function itemSellPrice(recipe)
+  if type(recipe) ~= "table" then return nil end
+  local explicit = tonumber(recipe.sellPrice)
+  if explicit and explicit > 0 then return math.floor(explicit) end
+
+  local itemID = Internal.NumericItemID(
+      Internal.ReagentKey(recipe), recipe.link, recipe.itemID)
+  if not itemID or itemID <= 0 then return nil end
+  local getter = _G.GetItemInfo
+  if type(getter) ~= "function" then return nil end
+
+  local results = nil
+  local ok = pcall(function() results = { getter(itemID) } end)
+  if not ok or type(results) ~= "table" then return nil end
+  local sell = tonumber(results[11])
+  if not sell or sell <= 0 then return nil end
+  return math.floor(sell)
+end
+
+local function materialCostForWarning(entry, recipe)
+  if type(entry) ~= "table" then return nil end
+  local cost = tonumber(entry.fullCost)
+  if not cost or cost <= 0 then cost = tonumber(entry.cost) end
+  if (not cost or cost <= 0) and type(Skilly.Cost.Recipe) == "function" then
+    local ok, info = pcall(Skilly.Cost.Recipe, recipe)
+    if ok and type(info) == "table" then
+      cost = tonumber(info.fullCost) or tonumber(info.total)
+    end
+  end
+  cost = tonumber(cost)
+  if not cost or cost <= 0 then return nil end
+  return math.floor(cost)
+end
+
+local function resaleWarning(entry)
+  if not featureEnabled("showResaleWarning", false) then return nil end
+  if type(entry) ~= "table" then return nil end
+  local recipe = type(entry.recipe) == "table" and entry.recipe or nil
+  if not recipe then return nil end
+
+  local sell = itemSellPrice(recipe)
+  if not sell then return nil end
+  local cost = materialCostForWarning(entry, recipe)
+  if not cost or cost <= sell then return nil end
+
+  return "costs more than the item sells for (full material cost "
+      .. formatMoney(cost) .. ", resale " .. formatMoney(sell) .. ")"
+end
+
+function Skilly.Rank.SynergyHint(recipe)
+  local ok, hint = pcall(disenchantHint, recipe)
+  if ok and type(hint) == "string" and hint ~= "" then return hint end
+  return nil
+end
+
+function Skilly.Rank.ResaleWarning(entry)
+  local ok, warning = pcall(resaleWarning, entry)
+  if ok and type(warning) == "string" and warning ~= "" then return warning end
+  return nil
+end
+
 local function sourceLabel(source)
   if source == "auctionator" or source == "auctioneer" or source == "tsm" then
     return "AH"
@@ -629,17 +723,19 @@ end
 local function describeMissing(missing)
   local parts = {}
   if type(missing) ~= "table" then return "" end
+  local showSource = featureEnabled("showSourceLabels", true)
   for _, row in ipairs(missing) do
     if type(row) == "table" and (tonumber(row.need) or 0) > 0 then
       local name = type(row.name) == "string" and row.name or "material"
-      parts[#parts + 1] = formatCount(row.need) .. " x " .. name
-          .. " (" .. sourceLabel(row.source) .. ")"
+      local text = formatCount(row.need) .. " x " .. name
+      if showSource then text = text .. " (" .. sourceLabel(row.source) .. ")" end
+      parts[#parts + 1] = text
     end
   end
   return table.concat(parts, " + ")
 end
 
-function SkillBuddy.Rank.Describe(entry)
+function Skilly.Rank.Describe(entry)
   if type(entry) ~= "table" then return "" end
 
   local recipe = type(entry.recipe) == "table" and entry.recipe or {}
@@ -650,7 +746,7 @@ function SkillBuddy.Rank.Describe(entry)
   if crafts < 1 then crafts = 1 end
 
   local color = "Unknown"
-  local detect = SkillBuddy.Difficulty and SkillBuddy.Difficulty.Detect
+  local detect = Skilly.Difficulty and Skilly.Difficulty.Detect
   if type(detect) == "function" then
     local ok, info = pcall(detect, recipe.difficulty)
     if ok and type(info) == "table" and type(info.color) == "string" then
@@ -672,7 +768,9 @@ function SkillBuddy.Rank.Describe(entry)
       header = header .. " (observed " .. formatCount(crafts) .. " crafts/point)"
     end
   end
-  if recipe.estimate then header = header .. " (estimate)" end
+  if recipe.estimate and featureEnabled("showEstimates", true) then
+    header = header .. " (estimate)"
+  end
 
   local parts = { header }
   if entry.probabilitySource ~= "observed" then
@@ -698,7 +796,10 @@ function SkillBuddy.Rank.Describe(entry)
         .. tostring(tonumber(recipe.learnRequired) or 0)
   end
 
-  local missingText = describeMissing(entry.missing)
+  local missingText = ""
+  if featureEnabled("showMissing", true) then
+    missingText = describeMissing(entry.missing)
+  end
   if missingText ~= "" then
     parts[#parts + 1] = "Buy " .. missingText
   elseif craftable <= 0 then
@@ -707,14 +808,19 @@ function SkillBuddy.Rank.Describe(entry)
         or "all materials on hand"
   end
 
+  local synergy = Skilly.Rank.SynergyHint(recipe)
+  if synergy then parts[#parts + 1] = synergy end
+  local resale = Skilly.Rank.ResaleWarning(entry)
+  if resale then parts[#parts + 1] = resale end
+
   return name .. ": " .. table.concat(parts, ", ") .. "."
 end
 
 -- SB-48: unlock hints are a separate line and only come from a live trainer
 -- capture. With no SB-48 hook, there is nothing to say.
-function SkillBuddy.Rank.DescribeHints(entry)
+function Skilly.Rank.DescribeHints(entry)
   local lines = {}
-  local hints = SkillBuddy.Hints
+  local hints = Skilly.Hints
   if type(hints) ~= "table" or type(hints.Lines) ~= "function" then return lines end
   local ok, result = pcall(hints.Lines, entry)
   if not ok or type(result) ~= "table" then return lines end

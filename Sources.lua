@@ -1,21 +1,29 @@
 --[[---------------------------------------------------------------------------------
-  SkillBuddy - by faslkjd56
+  Skilly - by faslkjd56
   WoW Forever 1.60.1 craft advisor
   Sources.lua - price and count source registry
 ------------------------------------------------------------------------------------]]
 
-SkillBuddy = SkillBuddy or {}
-SkillBuddy.Internal = SkillBuddy.Internal or {}
-local Internal = SkillBuddy.Internal
+Skilly = Skilly or {}
+Skilly.Internal = Skilly.Internal or {}
+local Internal = Skilly.Internal
+
+-- SB-43: a disabled source is never called, not merely ignored by callers.
+local function featureEnabled(key, default)
+  if type(Skilly.FeatureEnabled) ~= "function" then return default end
+  local ok, value = pcall(Skilly.FeatureEnabled, key, default)
+  if ok and type(value) == "boolean" then return value end
+  return default
+end
 
 -- SB-26: ordered, read-only price/count source registry.
-SkillBuddy.Sources = {}
+Skilly.Sources = {}
 
 local sourceCache = {}
 local candidateCache = {}
 local NO_SOURCE_VALUE = {}
 
-function SkillBuddy.ResetSourceCache()
+function Skilly.ResetSourceCache()
   sourceCache = {}
   candidateCache = {}
 
@@ -26,25 +34,25 @@ function SkillBuddy.ResetSourceCache()
   end
 end
 
-function SkillBuddy.RegisterSource(name, source)
+function Skilly.RegisterSource(name, source)
   if type(name) ~= "string" or name == "" or type(source) ~= "table" then
     return false
   end
-  for _, entry in ipairs(SkillBuddy.Sources) do
+  for _, entry in ipairs(Skilly.Sources) do
     if entry.name == name then
       entry.source = source
-      SkillBuddy.ResetSourceCache()
+      Skilly.ResetSourceCache()
       return true
     end
   end
-  SkillBuddy.Sources[#SkillBuddy.Sources + 1] = { name = name, source = source }
-  SkillBuddy.ResetSourceCache()
+  Skilly.Sources[#Skilly.Sources + 1] = { name = name, source = source }
+  Skilly.ResetSourceCache()
   return true
 end
 
 -- SB-38: return every positive value from registered sources with its registry
 -- name. The cached array is read-only; callers must not mutate it.
-function SkillBuddy.SourceCandidates(kind, itemKey, link, itemID)
+function Skilly.SourceCandidates(kind, itemKey, link, itemID)
   if type(kind) ~= "string" or type(itemKey) ~= "string" then return {} end
 
   local cacheKey = kind .. ":" .. itemKey
@@ -55,9 +63,11 @@ function SkillBuddy.SourceCandidates(kind, itemKey, link, itemID)
   end
 
   local results = {}
-  for _, entry in ipairs(SkillBuddy.Sources) do
+  local allowVendorPrice = featureEnabled("useVendorPrices", true)
+  for _, entry in ipairs(Skilly.Sources) do
     local method = entry.source and entry.source[kind]
-    if type(method) == "function" then
+    if type(method) == "function"
+        and (kind ~= "vendorPrice" or allowVendorPrice) then
       local ok, result = pcall(method, itemKey, link, itemID)
       if ok then
         local value = tonumber(result)
@@ -72,7 +82,7 @@ function SkillBuddy.SourceCandidates(kind, itemKey, link, itemID)
   return results
 end
 
-function SkillBuddy.SourceValue(kind, itemKey, link, itemID)
+function Skilly.SourceValue(kind, itemKey, link, itemID)
   if type(kind) ~= "string" or type(itemKey) ~= "string" then return nil end
 
   local cacheKey = kind .. ":" .. itemKey
@@ -84,13 +94,13 @@ function SkillBuddy.SourceValue(kind, itemKey, link, itemID)
 
   local value = nil
 
-  if kind == "price" and SkillBuddyDB and type(SkillBuddyDB.prices) == "table" then
-    local manual = tonumber(SkillBuddyDB.prices[itemKey])
+  if kind == "price" and SkillyDB and type(SkillyDB.prices) == "table" then
+    local manual = tonumber(SkillyDB.prices[itemKey])
     if manual and manual >= 0 then value = manual end
   end
 
   if value == nil then
-    local candidates = SkillBuddy.SourceCandidates(kind, itemKey, link, itemID)
+    local candidates = Skilly.SourceCandidates(kind, itemKey, link, itemID)
     if candidates[1] then value = candidates[1].value end
   end
 
@@ -106,7 +116,7 @@ local optionalAddons = {
   "Carbonite.Warehouse",
   "CarboniteWarehouse",
 }
-SkillBuddy.optionalAddons = optionalAddons
+Skilly.optionalAddons = optionalAddons
 
 local function tsmItemString(itemKey, link, itemID)
   local api = _G.TSM_API
@@ -147,12 +157,12 @@ local function registerTSMSource()
     return
   end
 
-  SkillBuddy.RegisterSource("tsm", {
+  Skilly.RegisterSource("tsm", {
     price = function(itemKey, link, itemID)
       local itemString = tsmItemString(itemKey, link, itemID)
       if not itemString or type(api.GetCustomPriceValue) ~= "function" then return nil end
 
-      local source = SkillBuddyDB and SkillBuddyDB.tsmPriceSource or "dbmarket"
+      local source = SkillyDB and SkillyDB.tsmPriceSource or "dbmarket"
       if type(source) ~= "string" or source == "" then source = "dbmarket" end
 
       local ok, value, err = pcall(api.GetCustomPriceValue, source, itemString)
@@ -170,7 +180,7 @@ local function registerTSMSource()
       local itemString = tsmItemString(itemKey, link, itemID)
       if not itemString then return nil end
 
-      -- SkillBuddy reads the player's own bags in SB-07; sources answer for
+      -- Skilly reads the player's own bags in SB-07; sources answer for
       -- stock outside them (bank, mail, alts, guild bank).
       local total = nil
       if type(api.GetPlayerTotals) == "function" then
@@ -198,7 +208,7 @@ local function registerTSMSource()
   })
 end
 
-local AUCTIONATOR_CALLER = "SkillBuddy"
+local AUCTIONATOR_CALLER = "Skilly"
 
 local function auctionatorHasAgeAPI(v1)
   return type(v1.GetAuctionAgeByItemID) == "function"
@@ -228,7 +238,7 @@ local function registerAuctionatorSource()
     return
   end
 
-  SkillBuddy.RegisterSource("auctionator", {
+  Skilly.RegisterSource("auctionator", {
     price = function(itemKey, link, itemID)
       local id = Internal.NumericItemID(itemKey, link, itemID)
       local value = nil
@@ -268,7 +278,7 @@ local function registerCarboniteSource()
     return
   end
 
-  SkillBuddy.RegisterSource("carbonite", {
+  Skilly.RegisterSource("carbonite", {
     count = function(itemKey, link, itemID)
       local id = Internal.NumericItemID(itemKey, link, itemID)
       if not id then return nil end
@@ -279,14 +289,18 @@ local function registerCarboniteSource()
   })
 end
 
-function SkillBuddy.InitSources()
+function Skilly.InitSources()
   -- Rebuild so a source whose public API disappeared is not left registered.
-  SkillBuddy.Sources = {}
-  SkillBuddy.ResetSourceCache()
+  Skilly.Sources = {}
+  Skilly.ResetSourceCache()
   -- SB-38: full-scan AH sources first for readability. Cheapest selection
   -- means registration order no longer changes the chosen price.
-  registerAuctionatorSource()
-  -- SB-33: registerAuctioneerSource() goes here once SB-30 verifies a public API.
-  registerTSMSource()
+  -- SB-43: a disabled adapter is never registered, so it cannot be called.
+  if featureEnabled("useAuctionator", true) then registerAuctionatorSource() end
+  -- SB-33: guarded registerAuctioneerSource() goes here once SB-30 verifies an API.
+  if featureEnabled("useAuctioneer", true) then
+    -- no adapter registered yet
+  end
+  if featureEnabled("useTSM", true) then registerTSMSource() end
   registerCarboniteSource()
 end

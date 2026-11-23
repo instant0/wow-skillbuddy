@@ -1,11 +1,11 @@
 --[[---------------------------------------------------------------------------------
-  SkillBuddy - by faslkjd56
+  Skilly - by faslkjd56
   WoW Forever 1.60.1 craft advisor
   Observe.lua - bounded crafts-per-point observations
 ------------------------------------------------------------------------------------]]
 
-SkillBuddy = SkillBuddy or {}
-SkillBuddy.Observe = SkillBuddy.Observe or {}
+Skilly = Skilly or {}
+Skilly.Observe = Skilly.Observe or {}
 
 local MAX_RECENT = 5
 local MAX_COUNT = 10000
@@ -56,22 +56,22 @@ local function validColor(value)
 end
 
 local function observationsDB(create)
-  if type(SkillBuddyCharDB) ~= "table" then
+  if type(SkillyCharDB) ~= "table" then
     if not create then return nil end
-    SkillBuddyCharDB = {}
+    SkillyCharDB = {}
   end
-  local db = SkillBuddyCharDB.observations
+  local db = SkillyCharDB.observations
   if type(db) ~= "table" then
     if not create then return nil end
     db = {}
-    SkillBuddyCharDB.observations = db
+    SkillyCharDB.observations = db
   end
   return db
 end
 
 -- SB-48: one craft outcome only. skillAfter > skillBefore means a skillup;
 -- equal values are an attempt with no point. Orange and gray are never stored.
-function SkillBuddy.Observe.Record(recipeKey, skillBefore, skillAfter, color)
+function Skilly.Observe.Record(recipeKey, skillBefore, skillAfter, color)
   if type(recipeKey) ~= "string" or recipeKey == "" then return false end
 
   local before = positiveInteger(skillBefore, 0, 10000)
@@ -131,7 +131,7 @@ end
 
 -- SB-13/SB-48: return craftsPerPoint, source. The ranker ignores anything that
 -- is not "observed", so thin, corrupt, or stale data falls back to color.
-function SkillBuddy.Observe.ExpectedCrafts(recipe, skill, p)
+function Skilly.Observe.ExpectedCrafts(recipe, skill, p)
   local chance = tonumber(p)
   if not chance or chance <= 0 or chance >= 1 then return nil, "color" end
 
@@ -173,7 +173,7 @@ function SkillBuddy.Observe.ExpectedCrafts(recipe, skill, p)
 end
 
 local function snapshot()
-  local snap = SkillBuddy.lastSnapshot
+  local snap = Skilly.lastSnapshot
   if type(snap) ~= "table" or type(snap.recipes) ~= "table" then return nil end
   return snap
 end
@@ -200,7 +200,7 @@ local function flushNoSkillup(now)
   local craft = pending
   pending = nil
   if expired(craft, now) then return end
-  pcall(SkillBuddy.Observe.Record, craft.key, craft.skill, craft.skill, craft.color)
+  pcall(Skilly.Observe.Record, craft.key, craft.skill, craft.skill, craft.color)
 end
 
 local function onLoot(message)
@@ -242,7 +242,7 @@ local function onSkill(message)
   if expired(craft, nowClock()) then return end
   if newSkill <= craft.skill then return end
 
-  pcall(SkillBuddy.Observe.Record, craft.key, craft.skill, newSkill, craft.color)
+  pcall(Skilly.Observe.Record, craft.key, craft.skill, newSkill, craft.color)
 end
 
 local function onProfessionUpdate()
