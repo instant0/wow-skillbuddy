@@ -9,8 +9,11 @@ intermediate feature work.
 ## Documentation roles
 
 - `README.md` — this file: design, layout, checks, and build instructions.
-- `TASKS.md` — ordered task priority list; the top entry is next.
-- `tasks/SB-*.md` — one task per file, with status in the header and all details.
+- `AGENTS.md` — short agent contract (goal, areas, layout, task rules).
+- `.agent/tasks-contract.md` — task-system paths, limits, roles, and handoffs.
+- `TASKS.md` — ordered pending-task list; the top pending entry is next.
+- `tasks/<area>/<ID>-<slug>.md` — one plan per pending task.
+- `tasks/archive/` — completed plans, kept verbatim.
 - `README.txt` — shipped user guide: what the addon does and its commands.
   Updated only for a release.
 
@@ -40,7 +43,8 @@ recipe-availability data.
 | `Bindings.xml` | Keybinding target |
 | `README.txt` | User-facing readme (shipped) |
 | `README.md` | This file (not shipped) |
-| `TASKS.md` | Task priority list (not shipped) |
+| `AGENTS.md` | Agent contract (not shipped) |
+| `TASKS.md` | Pending-task priority list (not shipped) |
 
 Task priorities are in `TASKS.md`; design decisions are in
 `plans/skillbuddy.md`. `tests/`, `tasks/`, and `plans/` are gitignored. None of
@@ -94,8 +98,8 @@ Copy **only** these files into a folder named `SkillBuddy`:
 SkillBuddy.toc  Data.lua  Core.lua  UI.lua  SkillBuddy.lua  Bindings.xml  README.txt
 ```
 
-Exclude: `README.md`, `TASKS.md`, `tests/`, `tasks/`, `plans/`, `docs/`,
-`.gitignore`, `.git/`.
+Exclude: `README.md`, `AGENTS.md`, `TASKS.md`, `tests/`, `tasks/`, `plans/`,
+`docs/`, `.agent/`, `.gitignore`, `.git/`.
 
 The current build target is `/mnt/r/SkillBuddy/`.
 

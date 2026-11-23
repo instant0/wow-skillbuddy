@@ -1,3 +1,6 @@
 tasks/**
 plans/**
 tests/**
+AGENTS.md
+.agent/**
+TASKS.md
