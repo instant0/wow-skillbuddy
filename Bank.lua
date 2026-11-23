@@ -48,27 +48,27 @@ end
 local function normalizeCache(cache)
   if type(cache) ~= "table" then return nil end
   if cache.schema ~= SCHEMA then return nil end
-  local capturedAt = tonumber(cache.capturedAt)
-  if not capturedAt or capturedAt <= 0 then return nil end
+  local capturedAt = positiveInt(cache.capturedAt)
+  if not capturedAt then return nil end
   if type(cache.counts) ~= "table" then return nil end
 
   local counts = {}
   local n = 0
   for key, value in pairs(cache.counts) do
-    if type(key) == "string" and string.match(key, "^item:%d+$") then
-      local count = positiveInt(value)
-      if count then
-        counts[key] = count
-        n = n + 1
-        if n >= MAX_KEYS then break end
-      end
+    if type(key) ~= "string" or not string.match(key, "^item:%d+$") then
+      return nil
     end
+    local count = positiveInt(value)
+    if not count then return nil end
+    n = n + 1
+    if n > MAX_KEYS then return nil end
+    counts[key] = count
   end
 
   return {
     schema = SCHEMA,
     counts = counts,
-    capturedAt = math.floor(capturedAt),
+    capturedAt = capturedAt,
   }
 end
 
