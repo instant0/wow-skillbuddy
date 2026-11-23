@@ -652,6 +652,17 @@ local function printDebugReport()
     SkillBuddy.Print("No recipes qualify in cheap mode.")
   end
 
+  -- SB-48: explain silence in the copyable debug/export only. Normal /sb next
+  -- output stays unchanged.
+  if okCheap and type(cheap) == "table" and cheap[1]
+      and type(SkillBuddy.Hints) == "table"
+      and type(SkillBuddy.Hints.Status) == "function" then
+    local okStatus, status = pcall(SkillBuddy.Hints.Status, cheap[1])
+    if okStatus and type(status) == "string" and status ~= "" then
+      SkillBuddy.Print(status)
+    end
+  end
+
   local fullTop = nil
   if type(SkillBuddy.Rank.BestFull) == "function" then
     local okFull, full = pcall(SkillBuddy.Rank.BestFull, snapshot, "cheap")
@@ -701,6 +712,23 @@ local function exportFeedback()
     if not okProbe then SkillBuddy.Print("probe failed: " .. tostring(probeErr)) end
   else
     SkillBuddy.Print("probe unavailable")
+  end
+
+  -- SB-50/SB-52: the export must be context aware. If a trainer is open its
+  -- rows are captured, and the stored trainer data is always reported, so one
+  -- paste contains probe, trainer state, and recommendation evidence.
+  local trainer = SkillBuddy.Trainer
+  if type(trainer) == "table" then
+    if type(trainer.Capture) == "function" then
+      local okCap, capErr = pcall(trainer.Capture)
+      if not okCap then SkillBuddy.Print("trainer capture failed: " .. tostring(capErr)) end
+    end
+    if type(trainer.PrintReport) == "function" then
+      local okReport, reportErr = pcall(trainer.PrintReport, 60)
+      if not okReport then
+        SkillBuddy.Print("trainer report failed: " .. tostring(reportErr))
+      end
+    end
   end
 
   local okDebug, debugErr = pcall(printDebugReport)

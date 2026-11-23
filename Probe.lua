@@ -198,21 +198,6 @@ probeRecipeAPIs = function(capi, recipeID)
   end
 end
 
-local function tooltipTrainerSpellID(index)
-  local tip = _G.GameTooltip
-  if not tip then return nil end
-  local results = nil
-  local ok = pcall(function()
-    tip:SetOwner(_G.UIParent, "ANCHOR_NONE")
-    tip:ClearLines()
-    tip:SetTrainerService(index)
-    results = { tip:GetSpell() }
-  end)
-  pcall(function() tip:Hide() end)
-  if not ok then return nil end
-  return firstPositiveNumber(results)
-end
-
 local function probeTrainer()
   local tip = _G.GameTooltip
   local okFn, setService = pcall(function() return tip and tip.SetTrainerService end)
@@ -235,7 +220,7 @@ local function probeTrainer()
         _G.GetTrainerServiceSkillReq, i)
     callAndDescribe("GetTrainerServiceSkillLine(" .. i .. ")",
         _G.GetTrainerServiceSkillLine, i)
-    local spellID = tooltipTrainerSpellID(i)
+    local spellID = Internal.TrainerSpellID(i)
     SkillBuddy.Print("trainer spellID(" .. i .. ") = " .. tostring(spellID or "unknown"))
   end
 end

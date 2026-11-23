@@ -16,6 +16,9 @@ SkillBuddy.Defaults = {
   assumePurchasable = true,
   asIfOwned = {},
   tsmPriceSource = "dbmarket",
+  -- SB-50: live trainer capture. Written only by a successful trainer scan.
+  trainerRecipes = {},
+  trainerScans = {},
 }
 
 local charDefaults = {
@@ -201,6 +204,29 @@ end
 -- SB-12/SB-46: shared source-grade order, used by Cost and Rank.
 Internal.GradeOrder = { onHand = 0, asIf = 1, vendor = 2, market = 3, unknown = 4 }
 
+-- SB-48/SB-43: forward-compatible feature lookup. SB-43 may later replace this
+-- with a full registry; until then a stored boolean or the safe default wins.
+function SkillBuddy.FeatureEnabled(key, default)
+  if type(key) ~= "string" or key == "" then return default end
+  if type(default) ~= "boolean" then default = true end
+
+  local features = SkillBuddy.Features
+  if type(features) == "table" then
+    if type(features.IsEnabled) == "function" then
+      local ok, value = pcall(features.IsEnabled, key)
+      if ok and type(value) == "boolean" then return value end
+    end
+    local value = features[key]
+    if type(value) == "boolean" then return value end
+  end
+
+  local db = type(SkillBuddyDB) == "table" and SkillBuddyDB or nil
+  local stored = nil
+  if db and type(db.features) == "table" then stored = db.features[key] end
+  if type(stored) == "boolean" then return stored end
+  return default
+end
+
 -- SB-36/SB-53: read the Forever profession window once, for probe and scan.
 function Internal.ProfessionWindowInfo()
   local capi = _G.C_TradeSkillUI
@@ -257,4 +283,30 @@ function Internal.TrainerWindowOpen()
     end
   end
   return false
+end
+
+-- SB-50: read a trainer row's spell ID without selecting it or opening UI.
+-- All tooltip calls are pcall-wrapped and the tooltip is always hidden again.
+function Internal.TrainerSpellID(index)
+  local tip = _G.GameTooltip
+  if not tip then return nil end
+
+  local results = nil
+  local ok = pcall(function()
+    tip:SetOwner(_G.UIParent, "ANCHOR_NONE")
+    tip:ClearLines()
+    if type(tip.SetTrainerService) ~= "function" then return end
+    tip:SetTrainerService(index)
+    results = { tip:GetSpell() }
+  end)
+  pcall(function() tip:Hide() end)
+
+  if not ok or type(results) ~= "table" then return nil end
+  for _, value in ipairs(results) do
+    local n = tonumber(value)
+    if n and n > 0 and n == math.floor(n) and n < 2000000 then
+      return math.floor(n)
+    end
+  end
+  return nil
 end

@@ -12,10 +12,13 @@
 Data.lua
 Core.lua
 Probe.lua
+Trainer.lua
 Scan.lua
 Sources.lua
 Cost.lua
+Observe.lua
 Rank.lua
+Hints.lua
 UI.lua
 SkillBuddy.lua
 Bindings.xml

@@ -160,6 +160,24 @@ local function recipeBelongsToProfession(capi, profession, recipeID)
   return false
 end
 
+-- SB-48: an unlearned recipe enters ranking only when the live trainer capture
+-- says it is available at the current skill. The client still supplies the
+-- schematic/reagents, so it can be priced like any other recipe.
+local function trainerLearnRow(recipeID, skill, professionName)
+  local trainer = SkillBuddy.Trainer
+  if type(trainer) ~= "table" or type(trainer.Recipe) ~= "function" then return nil end
+  local ok, row = pcall(trainer.Recipe, recipeID)
+  if not ok or type(row) ~= "table" then return nil end
+
+  local required = positiveInteger(row.skillRequired, 1, 10000)
+  if not required or required > skill then return nil end
+
+  local captured = type(row.profession) == "string" and string.lower(row.profession) or nil
+  local current = type(professionName) == "string" and string.lower(professionName) or nil
+  if captured and current and captured ~= current then return nil end
+  return row
+end
+
 local function scanCurrentModern()
   local profession = Internal.ProfessionWindowInfo()
   if not profession then return nil end
@@ -193,7 +211,13 @@ local function scanCurrentModern()
       local infoResults = Internal.CallResults(capi.GetRecipeInfo, recipeID)
       local info = infoResults and infoResults[1] or nil
       if type(info) == "table" and type(info.name) == "string" and info.name ~= "" then
-        if info.learned ~= false and info.disabled ~= true and info.isDummyRecipe ~= true then
+        local learnRow = nil
+        if info.learned == false then
+          learnRow = trainerLearnRow(recipeID, snapshot.skill, snapshot.profession)
+        end
+        local include = (info.learned ~= false or learnRow ~= nil)
+            and info.disabled ~= true and info.isDummyRecipe ~= true
+        if include then
           local difficulty = difficultyFromRelative(info.relativeDifficulty)
           if difficulty and type(capi.GetRecipeSchematic) == "function" then
             local schematicResults = Internal.CallResults(capi.GetRecipeSchematic, recipeID, false)
@@ -234,6 +258,8 @@ local function scanCurrentModern()
                   cooldown = 0,
                   itemID = outputID,
                   learned = info.learned == true,
+                  learnable = learnRow ~= nil,
+                  learnRequired = learnRow and learnRow.skillRequired or nil,
                 }
               end
             end

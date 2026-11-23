@@ -375,24 +375,10 @@ end
 -- SB-43/SB-54: read the future central feature registry when it exists, but
 -- never create a setting here. Absent or malformed values use a safe default.
 local function featureEnabled(key, default)
-  local features = SkillBuddy.Features
-  if type(features) == "table" then
-    if type(features.IsEnabled) == "function" then
-      local ok, value = pcall(features.IsEnabled, key)
-      if ok and type(value) == "boolean" then return value end
-    end
-    local value = features[key]
-    if type(value) == "boolean" then return value end
-  end
-
   if type(SkillBuddy.FeatureEnabled) == "function" then
-    local ok, value = pcall(SkillBuddy.FeatureEnabled, key)
+    local ok, value = pcall(SkillBuddy.FeatureEnabled, key, default)
     if ok and type(value) == "boolean" then return value end
   end
-
-  local db = type(SkillBuddyDB) == "table" and SkillBuddyDB or nil
-  local stored = db and type(db.features) == "table" and db.features[key] or nil
-  if type(stored) == "boolean" then return stored end
   return default
 end
 
@@ -411,6 +397,10 @@ local function expectedCraftsFor(recipe, skill, p)
   local display = math.ceil(1 / p)
   local denominator = 1 / p
   local source = "color"
+
+  if not featureEnabled("useObservedRate", true) then
+    return display, source, denominator
+  end
 
   local observe = SkillBuddy.Observe
   if p > 0 and p < 1 and type(observe) == "table"
@@ -654,6 +644,7 @@ function SkillBuddy.Rank.Describe(entry)
 
   local recipe = type(entry.recipe) == "table" and entry.recipe or {}
   local name = type(recipe.name) == "string" and recipe.name or "Unknown recipe"
+  if recipe.learnable then name = "Learn first: " .. name end
   local p = tonumber(entry.p) or 0
   local crafts = tonumber(entry.expectedCrafts) or 1
   if crafts < 1 then crafts = 1 end
@@ -698,14 +689,22 @@ function SkillBuddy.Rank.Describe(entry)
 
   local craftable = tonumber(entry.craftable) or 0
   if craftable > 0 then
-    parts[#parts + 1] = formatCount(craftable) .. " craftable with your materials"
+    parts[#parts + 1] = formatCount(craftable)
+        .. (recipe.learnable and " craftable after learning"
+            or " craftable with your materials")
+  end
+  if recipe.learnable then
+    parts[#parts + 1] = "learn at skill "
+        .. tostring(tonumber(recipe.learnRequired) or 0)
   end
 
   local missingText = describeMissing(entry.missing)
   if missingText ~= "" then
     parts[#parts + 1] = "Buy " .. missingText
   elseif craftable <= 0 then
-    parts[#parts + 1] = "all materials on hand"
+    parts[#parts + 1] = recipe.learnable
+        and "all materials on hand after learning"
+        or "all materials on hand"
   end
 
   return name .. ": " .. table.concat(parts, ", ") .. "."
