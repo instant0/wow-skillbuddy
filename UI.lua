@@ -41,9 +41,25 @@ local function createFontString(parent, name, font)
   return nil
 end
 
--- Placeholder binding target for Bindings.xml. Scripts are added in SB-19.
+-- SB-19: hidden binding target; OnClick uses the same recommendation path as /skilly next.
 local bindingButton = createFrame("Button", "SkillyBindingButton", _G.UIParent)
-if bindingButton then callMethod(bindingButton, "Hide") end
+if bindingButton then
+  callMethod(bindingButton, "Hide")
+  callMethod(bindingButton, "SetScript", "OnClick", function()
+    if type(Skilly.InitDB) == "function" then pcall(Skilly.InitDB) end
+    local recommend = Skilly.Recommend
+    if type(recommend) == "function" then
+      local ok, err = pcall(recommend)
+      if not ok and type(Skilly.Print) == "function" then
+        pcall(Skilly.Print, "Recommendation failed: " .. tostring(err))
+      end
+      return
+    end
+    if type(Skilly.Print) == "function" then
+      pcall(Skilly.Print, "Recommendation unavailable: missing Skilly.Recommend.")
+    end
+  end)
+end
 
 -- SB-18/SB-54: chat is authoritative; a result window (SB-17) is optional.
 -- Every external call is type-checked and pcall-wrapped.
@@ -106,6 +122,167 @@ local resultsBuildFailed = false
 local resultsRows = {}
 local lastEntries = nil
 local inSpecialFrames = false
+local resultsDefaultPoint = { point = "CENTER", rel = "UIParent", relPoint = "CENTER", x = 0, y = 0 }
+local resultsAnchored = false
+local professionsHooked = false
+local autoAdviceOpen = false
+local autoAdviceSignature = nil
+local autoAdviceAt = 0
+
+local function autoAdviceEnabled()
+  if type(Skilly.FeatureEnabled) ~= "function" then return false end
+  local ok, value = pcall(Skilly.FeatureEnabled, "useAutoAdviceOnOpen", false)
+  return ok and value == true
+end
+
+local function nowSeconds()
+  if type(_G.GetTime) == "function" then
+    local ok, t = pcall(_G.GetTime)
+    if ok and type(t) == "number" then return t end
+  end
+  if type(_G.time) == "function" then
+    local ok, t = pcall(_G.time)
+    if ok and type(t) == "number" then return t end
+  end
+  return 0
+end
+
+local function tradeSkillLinkedOrGuild()
+  local fn = _G.IsTradeSkillLinked
+  if type(fn) == "function" then
+    local ok, linked, name = pcall(fn)
+    if ok and (linked == true or (type(name) == "string" and name ~= "")) then
+      return true
+    end
+  end
+  fn = _G.IsTradeSkillGuild
+  if type(fn) == "function" then
+    local ok, isGuild = pcall(fn)
+    if ok and isGuild == true then return true end
+  end
+  return false
+end
+
+local function snapshotSignature(snapshot)
+  if type(snapshot) ~= "table" then return nil end
+  local profession = type(snapshot.profession) == "string" and snapshot.profession or ""
+  local skill = tonumber(snapshot.skill) or 0
+  local maxSkill = tonumber(snapshot.maxSkill) or 0
+  local count = type(snapshot.recipes) == "table" and #snapshot.recipes or 0
+  local sourceCounter = tonumber(snapshot.sourceCounter) or 0
+  return table.concat({ profession, skill, maxSkill, count, sourceCounter }, ":")
+end
+
+local function maybeAutoAdvice(event)
+  if not autoAdviceEnabled() then return end
+  if not autoAdviceOpen then return end
+  if tradeSkillLinkedOrGuild() then return end
+
+  local scan = Skilly.Scan
+  if type(scan) ~= "table" or type(scan.Current) ~= "function" then return end
+  local ok, snapshot = pcall(scan.Current)
+  if not ok or type(snapshot) ~= "table" then return end
+  if type(snapshot.profession) ~= "string" or snapshot.profession == "" then return end
+
+  local sig = snapshotSignature(snapshot)
+  if not sig then return end
+  local t = nowSeconds()
+  if sig == autoAdviceSignature and (t - autoAdviceAt) < 2 then return end
+
+  autoAdviceSignature = sig
+  autoAdviceAt = t
+  if type(Skilly.Recommend) == "function" then
+    pcall(Skilly.Recommend)
+  end
+end
+
+local function companionAnchorEnabled()
+  if type(Skilly.FeatureEnabled) ~= "function" then return false end
+  local ok, value = pcall(Skilly.FeatureEnabled, "useCompanionAnchor", false)
+  return ok and value == true
+end
+
+local function professionsFrameVisible()
+  local frame = _G.ProfessionsFrame
+  if not frame then return nil end
+  local ok, shown = pcall(function() return frame:IsShown() end)
+  if ok and shown == true then return frame end
+  return nil
+end
+
+local function restoreResultsDefaultPoint()
+  if not resultsFrame then return end
+  pcall(function()
+    resultsFrame:ClearAllPoints()
+    local rel = _G[resultsDefaultPoint.rel] or _G.UIParent
+    resultsFrame:SetPoint(resultsDefaultPoint.point, rel, resultsDefaultPoint.relPoint, resultsDefaultPoint.x, resultsDefaultPoint.y)
+  end)
+  resultsAnchored = false
+end
+
+function Skilly.UI.UpdateCompanionAnchor()
+  if not resultsFrame then return false end
+  local enabled = companionAnchorEnabled()
+  local prof = enabled and professionsFrameVisible() or nil
+  if prof then
+    local ok = pcall(function()
+      resultsFrame:ClearAllPoints()
+      resultsFrame:SetPoint("TOPLEFT", prof, "TOPRIGHT", 8, 0)
+    end)
+    if ok then
+      resultsAnchored = true
+      return true
+    end
+  end
+
+  if resultsAnchored then restoreResultsDefaultPoint() end
+  return false
+end
+
+function Skilly.UI.TryHookProfessionsFrame()
+  if professionsHooked then return true end
+  local frame = _G.ProfessionsFrame
+  if not frame then return false end
+  local okHook, hook = pcall(function() return frame.HookScript end)
+  if not okHook or type(hook) ~= "function" then return false end
+  local ok1 = pcall(hook, frame, "OnShow", function()
+    pcall(Skilly.UI.UpdateCompanionAnchor)
+  end)
+  local ok2 = pcall(hook, frame, "OnHide", function()
+    pcall(Skilly.UI.UpdateCompanionAnchor)
+  end)
+  professionsHooked = ok1 or ok2
+  return professionsHooked
+end
+
+function Skilly.UI.OnProfessionsWindowEvent(event)
+  pcall(Skilly.UI.TryHookProfessionsFrame)
+
+  if event == "TRADE_SKILL_SHOW" then
+    autoAdviceOpen = true
+    autoAdviceSignature = nil
+    autoAdviceAt = 0
+    pcall(Skilly.UI.UpdateCompanionAnchor)
+    pcall(maybeAutoAdvice, event)
+    return
+  end
+
+  if event == "TRADE_SKILL_CLOSE" then
+    autoAdviceOpen = false
+    autoAdviceSignature = nil
+    autoAdviceAt = 0
+    if resultsAnchored then restoreResultsDefaultPoint() end
+    return
+  end
+
+  if event == "TRADE_SKILL_LIST_UPDATE" or event == "SKILL_LINES_CHANGED" then
+    pcall(Skilly.UI.UpdateCompanionAnchor)
+    pcall(maybeAutoAdvice, event)
+    return
+  end
+
+  pcall(Skilly.UI.UpdateCompanionAnchor)
+end
 
 -- Colour comes from the client when it provides one; never invent a palette.
 local function clientDifficultyColor(recipe)
@@ -151,10 +328,14 @@ local function buildResultsFrame()
   end
 
   callMethod(frame, "SetScript", "OnDragStart", function()
+    if resultsAnchored then return end
     callMethod(frame, "StartMoving")
   end)
   callMethod(frame, "SetScript", "OnDragStop", function()
     callMethod(frame, "StopMovingOrSizing")
+  end)
+  callMethod(frame, "SetScript", "OnShow", function()
+    pcall(Skilly.UI.UpdateCompanionAnchor)
   end)
 
   local title = createFontString(frame, "SkillyResultsTitle", "GameFontNormalLarge")
@@ -262,6 +443,7 @@ function Skilly.UI.ShowResults(entries)
 
   callMethod(resultsFrame, "SetHeight", math.max(120, y + 16))
   callMethod(resultsFrame, "Show")
+  pcall(Skilly.UI.UpdateCompanionAnchor)
   return true
 end
 

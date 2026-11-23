@@ -178,6 +178,30 @@ local function trainerLearnRow(recipeID, skill, professionName)
   return row
 end
 
+local function updateLearnedRecipeCache(snapshot)
+  if type(snapshot) ~= "table" then return end
+  if type(SkillyCharDB) ~= "table" then return end
+  local cache = SkillyCharDB.learnedRecipes
+  if type(cache) ~= "table" or cache.schema ~= 1 then
+    cache = { schema = 1, bySpellID = {} }
+    SkillyCharDB.learnedRecipes = cache
+  end
+  if type(cache.bySpellID) ~= "table" then cache.bySpellID = {} end
+  local now = nil
+  if type(_G.time) == "function" then local ok,t=pcall(_G.time); if ok and type(t)=='number' and t>0 then now=math.floor(t) end end
+  local profession = type(snapshot.profession) == "string" and snapshot.profession or nil
+  for _, recipe in ipairs(snapshot.recipes or {}) do
+    local id = tonumber(recipe and recipe.spellID)
+    if id and id > 0 and id == math.floor(id) and recipe.learned == true then
+      cache.bySpellID[math.floor(id)] = {
+        learned = true,
+        profession = profession,
+        updated = now,
+      }
+    end
+  end
+end
+
 local function scanCurrentModern()
   local profession = Internal.ProfessionWindowInfo()
   if not profession then return nil end
@@ -269,6 +293,7 @@ local function scanCurrentModern()
     end
   end
 
+  pcall(updateLearnedRecipeCache, snapshot)
   return snapshot
 end
 
@@ -345,17 +370,21 @@ local function scanCurrentClassic()
             madeMin = madeMin,
             madeMax = madeMax,
             cooldown = cooldown,
+            learned = true,
           }
         end
       end
     end
   end
 
+  pcall(updateLearnedRecipeCache, snapshot)
   return snapshot
 end
 
 function Skilly.Scan.Current()
-  Skilly.ResetSourceCache()
+  if type(Skilly.ResetSourceCache) == "function" then
+    pcall(Skilly.ResetSourceCache)
+  end
 
   local modern = scanCurrentModern()
   if modern then

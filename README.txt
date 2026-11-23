@@ -28,10 +28,13 @@ What is ready to test in 0.3.1:
   - Manual price overrides (/skilly prices) and /skilly debug diagnostics
   - /skilly probe diagnostics for profession and trainer APIs
   - /skilly export: a copyable window with probe and debug output
+  - /skilly bank cache for banked crafting reagents (captured when bank opens)
+  - /skilly trainer capture for trainer recipe unlock skills
+  - Optional companion anchor beside Professions window (feature toggle, default off)
+  - Optional auto-advice on compatible profession open (feature toggle, default off)
 
 Coming in a later build:
-  - Recipe unlock hints learned from visiting a crafting trainer
-  - Optional Skilly text in the trade-skill window and tooltips
+  - Optional Skilly text/highlight in the trade-skill window and tooltips
 
 ===============================================================================
 COMMANDS
@@ -48,6 +51,10 @@ COMMANDS
   /skilly prices <item> <c>   Set a manual price, in copper (0 is allowed)
   /skilly prices clear <item> Remove one manual price
   /skilly prices clear all    Remove every manual price
+  /skilly bank                Report bank cache age/state (captures only when bank is open)
+  /skilly bank clear          Clear the per-character bank cache
+  /skilly trainer             Capture recipes from the open crafting trainer
+  /skilly trainer clear       Clear captured trainer data
   /skilly debug               Explain the winner and list unpriced near-misses
   /skilly probe               Print profession and trainer API diagnostics to chat
   /skilly export              Open a copyable window with probe + debug output
@@ -91,6 +98,9 @@ Open with /skilly config or Interface > AddOns > Skilly.
                               auction price is known (on by default)
   Results to show             How many recipes to list (1-10)
   Show minimap button         Display the launcher button
+  Feature toggles             Per-feature checkboxes for price sources, ranking
+                              options, output details, companion anchor, and
+                              auto-advice (see Settings > Skilly)
 
 ===============================================================================
 PRICES
@@ -118,11 +128,14 @@ copied, so use /skilly export instead of /skilly probe for feedback:
 2. Type /skilly export and press Enter. A window opens with the text already
    selected. Press Ctrl+C, then paste the whole report with your reply.
 3. Close the profession window and run /skilly export once more.
-4. Open a crafting trainer and run /skilly export a third time. With the trainer
-   closed, the report should say "trainer window closed - no rows read".
+4. Open a crafting trainer and run /skilly trainer, then /skilly export. The
+   export should include trainer capture status/count.
+5. Optional: enable "Anchor to Professions window" and/or "Auto-advice on
+   profession open" in Settings, then reopen the profession window and confirm
+   behavior.
 
 Esc or the close button hides the window. Drag its edge to move it. Each report
-contains the version, API diagnostics, and the current recommendation evidence.
+contains the version, API diagnostics, cache state, and recommendation evidence.
 
 Please also include:
   - the profession and your current skill level,

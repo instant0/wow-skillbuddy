@@ -63,9 +63,10 @@ local function recipeDB(create)
   local db = SkillyDB.trainerRecipes
   if type(db) ~= "table" then
     if not create then return nil end
-    db = {}
+    db = { schema = 1 }
     SkillyDB.trainerRecipes = db
   end
+  if db.schema ~= 1 then db.schema = 1 end
   return db
 end
 
@@ -77,9 +78,10 @@ local function scanDB(create)
   local db = SkillyDB.trainerScans
   if type(db) ~= "table" then
     if not create then return nil end
-    db = {}
+    db = { schema = 1 }
     SkillyDB.trainerScans = db
   end
+  if db.schema ~= 1 then db.schema = 1 end
   return db
 end
 
@@ -172,26 +174,42 @@ function Skilly.Trainer.Capture(quiet)
       local changed = isNew or old.name ~= row.name
           or old.skillRequired ~= row.skillRequired
           or old.profession ~= row.profession
+          or old.rank ~= row.rank
+          or old.source ~= "trainer"
 
       if isNew and currentCount >= MAX_STORED then
         skipped = skipped + 1
       elseif changed then
-        db[row.spellID] = row
+        local merged = {
+          spellID = row.spellID,
+          name = row.name,
+          rank = row.rank or (type(old) == "table" and old.rank or nil),
+          profession = row.profession or (type(old) == "table" and old.profession or nil),
+          skillRequired = row.skillRequired,
+          updated = row.updated or (type(old) == "table" and old.updated or nil),
+          source = "trainer",
+        }
+        db[row.spellID] = merged
         if isNew then
           currentCount = currentCount + 1
           added = added + 1
         else
           refreshed = refreshed + 1
         end
-        if #samples < MAX_SAMPLE then samples[#samples + 1] = row end
+        if #samples < MAX_SAMPLE then samples[#samples + 1] = merged end
       else
+        -- Conservative merge: keep existing richer row, only refresh timestamp/source.
+        if type(old) == "table" then
+          old.updated = row.updated or old.updated
+          old.source = old.source or "trainer"
+        end
         unchanged = unchanged + 1
       end
     end
   end
 
   local stamp = nowStamp()
-  if stamp then
+  if stamp and (added > 0 or refreshed > 0 or unchanged > 0) then
     local scans = scanDB(true)
     scans[profession or "unknown"] = stamp
   end
@@ -306,8 +324,8 @@ end
 
 function Skilly.Trainer.Clear()
   if type(SkillyDB) ~= "table" then return end
-  SkillyDB.trainerRecipes = {}
-  SkillyDB.trainerScans = {}
+  SkillyDB.trainerRecipes = { schema = 1 }
+  SkillyDB.trainerScans = { schema = 1 }
   Skilly.Print("Trainer capture cleared.")
 end
 

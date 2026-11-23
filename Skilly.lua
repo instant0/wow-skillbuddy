@@ -9,8 +9,22 @@ Skilly.version = "0.3.1"
 BINDING_HEADER_SKILLY = "Skilly"
 BINDING_NAME_SKILLY_NEXT_CRAFT = "Next craft"
 
--- Real compartment action lands in SB-16.
-function Skilly_OnCompartmentClick()
+-- SB-16: compartment click uses the same recommendation path as /skilly next.
+function Skilly_OnCompartmentClick(...)
+  if type(Skilly.InitDB) == "function" then pcall(Skilly.InitDB) end
+
+  local recommend = Skilly.Recommend
+  if type(recommend) == "function" then
+    local ok, err = pcall(recommend)
+    if not ok and type(Skilly.Print) == "function" then
+      pcall(Skilly.Print, "Recommendation failed: " .. tostring(err))
+    end
+    return
+  end
+
+  if type(Skilly.Print) == "function" then
+    pcall(Skilly.Print, "Recommendation unavailable: missing Skilly.Recommend.")
+  end
 end
 
 local function dbGet(key)
@@ -752,8 +766,57 @@ local function printNearMisses(snapshot, limit)
   end
 end
 
+local function printCacheState()
+  local charDB = type(SkillyCharDB) == "table" and SkillyCharDB or nil
+  local lr = charDB and charDB.learnedRecipes or nil
+  local learnedCount = 0
+  local learnedUpdated = nil
+  if type(lr) == "table" and type(lr.bySpellID) == "table" then
+    for _, row in pairs(lr.bySpellID) do
+      if type(row) == "table" and row.learned == true then
+        learnedCount = learnedCount + 1
+        local u = tonumber(row.updated)
+        if u and u > 0 and (not learnedUpdated or u > learnedUpdated) then learnedUpdated = u end
+      end
+    end
+  end
+  local age = "never"
+  if learnedUpdated and type(_G.time) == "function" then
+    local ok, now = pcall(_G.time)
+    if ok and type(now) == "number" and now >= learnedUpdated then
+      age = tostring(math.floor((now - learnedUpdated) / 60)) .. "m ago"
+    end
+  end
+  Skilly.Print("learned recipe cache: " .. tostring(learnedCount) .. " recipe(s), last update " .. age .. ", schema=" .. tostring(lr and lr.schema or "missing"))
+
+  local db = type(SkillyDB) == "table" and SkillyDB or nil
+  local tr = db and db.trainerRecipes or nil
+  local ts = db and db.trainerScans or nil
+  local trainerCount = 0
+  local lastScan = nil
+  if type(tr) == "table" then
+    for k, v in pairs(tr) do
+      if k ~= "schema" and type(v) == "table" then trainerCount = trainerCount + 1 end
+    end
+  end
+  if type(ts) == "table" then
+    for k, v in pairs(ts) do
+      if k ~= "schema" and type(v) == "number" and v > 0 and (not lastScan or v > lastScan) then lastScan = v end
+    end
+  end
+  local scanAge = "never"
+  if lastScan and type(_G.time) == "function" then
+    local ok, now = pcall(_G.time)
+    if ok and type(now) == "number" and now >= lastScan then
+      scanAge = tostring(math.floor((now - lastScan) / 60)) .. "m ago"
+    end
+  end
+  Skilly.Print("trainer cache: " .. tostring(trainerCount) .. " recipe(s), last scan " .. scanAge .. ", schema=" .. tostring(tr and tr.schema or "missing"))
+end
+
 local function printDebugReport()
   printBankState()
+  printCacheState()
 
   local scan = type(Skilly.Scan) == "table" and Skilly.Scan.Current or nil
   if type(scan) ~= "function" then
@@ -930,6 +993,10 @@ if okCreate and frame then
   callWidget(frame, "RegisterEvent", "PLAYER_LOGIN")
   callWidget(frame, "RegisterEvent", "ADDON_LOADED")
   callWidget(frame, "RegisterEvent", "BANKFRAME_OPENED")
+  callWidget(frame, "RegisterEvent", "TRADE_SKILL_SHOW")
+  callWidget(frame, "RegisterEvent", "TRADE_SKILL_CLOSE")
+  callWidget(frame, "RegisterEvent", "TRADE_SKILL_LIST_UPDATE")
+  callWidget(frame, "RegisterEvent", "SKILL_LINES_CHANGED")
   callWidget(frame, "SetScript", "OnEvent", function(self, event, arg1)
     if event == "ADDON_LOADED" then
       for _, name in ipairs(Skilly.optionalAddons or {}) do
@@ -937,12 +1004,24 @@ if okCreate and frame then
           pcall(Skilly.InitSources)
         end
       end
+      local ui = Skilly.UI
+      if type(ui) == "table" and type(ui.TryHookProfessionsFrame) == "function" then
+        pcall(ui.TryHookProfessionsFrame)
+      end
       return
     end
     if event == "BANKFRAME_OPENED" then
       local bank = Skilly.Bank
       if type(bank) == "table" and type(bank.Capture) == "function" then
         pcall(bank.Capture, "BANKFRAME_OPENED")
+      end
+      return
+    end
+    if event == "TRADE_SKILL_SHOW" or event == "TRADE_SKILL_CLOSE"
+        or event == "TRADE_SKILL_LIST_UPDATE" or event == "SKILL_LINES_CHANGED" then
+      local ui = Skilly.UI
+      if type(ui) == "table" and type(ui.OnProfessionsWindowEvent) == "function" then
+        pcall(ui.OnProfessionsWindowEvent, event)
       end
       return
     end

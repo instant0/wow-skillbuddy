@@ -19,17 +19,12 @@ intermediate feature work.
 
 ## Current status
 
-Version **0.3.1**. Test build. The recommendation engine is now real:
-`Skilly.Recommend` scans the open profession, ranks recipes in `best` or
-`cheap` mode, and prints explanations plus up to three runners-up through the
-chat formatter. `/skilly help <cmd>`, `/skilly prices`, and `/skilly debug` are available.
-
-Use `/skilly export` to collect feedback from the live client. It prints the same
-report to chat and also opens a pre-highlighted multiline EditBox so the user
-can press Ctrl+C. The probe now reports both trade-skill API families, trainer
-API presence, and a closed-trainer message without opening any window.
-Trainer capture and unlock hints are not implemented yet, so Skilly has no
-recipe-availability data.
+Version **0.3.1**. Test build. The recommendation engine is real and wired to
+`/skilly`, `/skilly best|cheap`, `/skilly debug`, `/skilly export`, `/skilly bank`,
+and `/skilly trainer`. Bank cache (SB-59/SB-62), Professions companion anchor
+(SB-63, opt-in), auto-advice on profession open (SB-64, opt-in), and persisted
+learned-recipe/trainer caches (SB-66) have implementation/evidence; some tasks
+await review/archive consolidation. Chat remains authoritative.
 
 ## Layout
 
@@ -37,9 +32,18 @@ recipe-availability data.
 |---|---|
 | `Skilly.toc` | Load order, interface version, saved variables, version |
 | `Data.lua` | Bundled game data: thresholds, vendor prices, material pressure, difficulty bands |
-| `Core.lua` | Command registry, probe, scanner, price sources, cost, probability, ranking helpers |
-| `UI.lua` | Copyable export window, result-window hook, binding-button placeholder |
-| `Skilly.lua` | Settings page, `/skilly` commands, bootstrap |
+| `Core.lua` | Command registry, defaults/DB init, feature registry, internal helpers |
+| `Probe.lua` | Read-only diagnostics / probe report |
+| `Trainer.lua` | Live trainer capture and account-wide trainer cache |
+| `Scan.lua` | Profession/trade-skill snapshot and learned-recipe cache refresh |
+| `Sources.lua` | Price/count source adapters and reset hooks |
+| `Bank.lua` | Per-character bank cache capture/report/clear |
+| `Cost.lua` | Material cost and availability resolution |
+| `Observe.lua` | Bounded craft observation hooks |
+| `Rank.lua` | Probability, ranking, descriptions |
+| `Hints.lua` | Unlock/cross-skill hint helpers |
+| `UI.lua` | Result/export windows, companion anchor, auto-advice hooks |
+| `Skilly.lua` | Settings, commands, bootstrap/events |
 | `Bindings.xml` | Keybinding target |
 | `README.txt` | User-facing readme (shipped) |
 | `README.md` | This file (not shipped) |

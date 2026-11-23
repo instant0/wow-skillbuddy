@@ -16,9 +16,9 @@ Skilly.Defaults = {
   assumePurchasable = true,
   asIfOwned = {},
   tsmPriceSource = "dbmarket",
-  -- SB-50: live trainer capture. Written only by a successful trainer scan.
-  trainerRecipes = {},
-  trainerScans = {},
+  -- SB-50/SB-66: live trainer capture. Written only by a successful trainer scan.
+  trainerRecipes = { schema = 1 },
+  trainerScans = { schema = 1 },
 }
 
 local charDefaults = {
@@ -26,6 +26,8 @@ local charDefaults = {
   learned = {},
   observations = {},
   bankCache = nil,
+  -- SB-66: per-character learned recipe cache, refreshed from safe profession scans.
+  learnedRecipes = { schema = 1, bySpellID = {} },
 }
 
 -- Fill only nil fields so user values (including false) are never replaced.
@@ -45,12 +47,69 @@ local function fillMissing(dst, src)
   end
 end
 
+local function normalizeLearnedRecipesCache(db)
+  if type(db) ~= "table" then return { schema = 1, bySpellID = {} } end
+  if db.schema ~= 1 then return { schema = 1, bySpellID = {} } end
+  local bySpellID = type(db.bySpellID) == "table" and db.bySpellID or {}
+  local out = {}
+  for k, v in pairs(bySpellID) do
+    local id = tonumber(k)
+    if id and id > 0 and id == math.floor(id) and type(v) == "table" and v.learned == true then
+      local profession = type(v.profession) == "string" and v.profession or nil
+      local updated = tonumber(v.updated)
+      if not updated or updated <= 0 then updated = nil else updated = math.floor(updated) end
+      out[math.floor(id)] = { learned = true, profession = profession, updated = updated }
+    end
+  end
+  return { schema = 1, bySpellID = out }
+end
+
+local function normalizeTrainerCache(db, scans)
+  local outDB = { schema = 1 }
+  local outScans = { schema = 1 }
+  if type(db) == "table" then
+    for k, v in pairs(db) do
+      local id = tonumber(k)
+      if id and id > 0 and id == math.floor(id) and type(v) == "table" then
+        local name = type(v.name) == "string" and v.name ~= "" and v.name or nil
+        local skill = tonumber(v.skillRequired)
+        if name and skill and skill > 0 and skill == math.floor(skill) then
+          local row = {
+            spellID = math.floor(id),
+            name = name,
+            rank = type(v.rank) == "string" and v.rank ~= "" and v.rank or nil,
+            profession = type(v.profession) == "string" and v.profession ~= "" and v.profession or nil,
+            skillRequired = math.floor(skill),
+            updated = tonumber(v.updated),
+            source = type(v.source) == "string" and v.source ~= "" and v.source or "trainer",
+          }
+          if not row.updated or row.updated <= 0 then row.updated = nil else row.updated = math.floor(row.updated) end
+          outDB[math.floor(id)] = row
+        end
+      end
+    end
+  end
+  if type(scans) == "table" then
+    for k, v in pairs(scans) do
+      if type(k) == "string" and k ~= "" then
+        local t = tonumber(v)
+        if t and t > 0 then outScans[k] = math.floor(t) end
+      end
+    end
+  end
+  return outDB, outScans
+end
+
 function Skilly.InitDB()
   if type(SkillyDB) ~= "table" then SkillyDB = {} end
   if type(SkillyCharDB) ~= "table" then SkillyCharDB = {} end
 
   fillMissing(SkillyDB, Skilly.Defaults)
   fillMissing(SkillyCharDB, charDefaults)
+
+  -- SB-66: normalize/migrate caches conservatively; corrupt/unknown shapes ignored.
+  SkillyCharDB.learnedRecipes = normalizeLearnedRecipesCache(SkillyCharDB.learnedRecipes)
+  SkillyDB.trainerRecipes, SkillyDB.trainerScans = normalizeTrainerCache(SkillyDB.trainerRecipes, SkillyDB.trainerScans)
 end
 
 -- Command registry lives here because Core.lua loads before feature modules.
@@ -270,6 +329,12 @@ Skilly.Features = {
   { key = "showFullCostRecommendation", default = true, category = "Output",
     label = "Full-material-cost winner",
     tooltip = "Show the separate full-material-cost recommendation." },
+  { key = "useCompanionAnchor", default = false, category = "Output",
+    label = "Anchor to Professions window",
+    tooltip = "When enabled, anchor Skilly results beside the Professions window instead of floating standalone." },
+  { key = "useAutoAdviceOnOpen", default = false, category = "Output",
+    label = "Auto-advice on profession open",
+    tooltip = "When enabled, print one Skilly recommendation when a compatible profession window opens." },
 }
 
 function Skilly.Features.IsEnabled(key)
