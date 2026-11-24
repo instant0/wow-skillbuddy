@@ -98,9 +98,12 @@ Open with /skilly config or Interface > AddOns > Skilly.
                               auction price is known (on by default)
   Results to show             How many recipes to list (1-10)
   Show minimap button         Display the launcher button
-  Feature toggles             Per-feature checkboxes for price sources, ranking
-                              options, output details, companion anchor, and
-                              auto-advice (see Settings > Skilly)
+  Chat recommendations       Print recommendations to chat (on by default).
+                              Off: show result window when available; falls
+                              back to chat if window cannot be shown.
+  Feature toggles             Grouped per-feature checkboxes for price sources,
+                              ranking options, output details, companion anchor,
+                              and auto-advice
 
 ===============================================================================
 PRICES

@@ -400,6 +400,68 @@ function Skilly.Rank.FullCostEnabled()
   return featureEnabled("showFullCostRecommendation", true)
 end
 
+local function knownThresholds(recipe)
+  if type(recipe) ~= "table" then return nil, nil end
+  local yellow, grey, source = thresholdsFor(recipe)
+  if not yellow or not grey or grey <= yellow then return nil, nil end
+  if source ~= "learned" and source ~= "gameData" then return nil, nil end
+  return yellow, grey
+end
+
+-- SB-76: expected skill points from N crafts with declining chance and gray cap.
+-- Deterministic expected-value model: at skill s, p(s)=(grey-s)/(grey-yellow),
+-- expected points E(s,n)=p(s)*(1+E(s+1,n-1)), capped by remaining points.
+local function expectedSkillPoints(recipe, skill, maxSkill, crafts)
+  local n = math.floor(tonumber(crafts) or 0)
+  if n <= 0 then return 0 end
+  local current = math.floor(tonumber(skill) or 0)
+  local cap = math.floor(tonumber(maxSkill) or 0)
+
+  local yellow, grey = knownThresholds(recipe)
+  if not yellow or not grey then
+    local p = Skilly.Rank.Probability(recipe, current, cap)
+    if p <= 0 then return 0 end
+    local points = n * p
+    if cap > 0 then
+      local rem = cap - current
+      if rem < 0 then rem = 0 end
+      if points > rem then points = rem end
+    end
+    return points
+  end
+
+  local limit = grey
+  if cap > 0 and cap < limit then limit = cap end
+  local remaining = limit - current
+  if remaining <= 0 then return 0 end
+
+  -- Iterative DP by remaining crafts to avoid deep recursion in Lua.
+  local prev = {}
+  for s = current, limit do prev[s] = 0 end
+  for _ = 1, n do
+    local nextRow = {}
+    for s = current, limit do
+      if s >= limit then
+        nextRow[s] = 0
+      else
+        local p = (grey - s) / (grey - yellow)
+        if p < 0 then p = 0 elseif p > 1 then p = 1 end
+        local rem = limit - s
+        local gain = 0
+        if p > 0 then gain = p * (1 + (prev[s + 1] or 0)) end
+        local val = gain + (1 - p) * (prev[s] or 0)
+        if val > rem then val = rem end
+        nextRow[s] = val
+      end
+    end
+    prev = nextRow
+  end
+  local val = prev[current] or 0
+  if val < 0 then val = 0 end
+  if val > remaining then val = remaining end
+  return val
+end
+
 -- SB-48: the color formula is the default. A bounded observation only changes
 -- the crafts-per-point denominator when the optional helper actually reports
 -- an intervention (>=2 crafts/point, already validated by SB-48).
@@ -535,6 +597,20 @@ function Skilly.Rank.Best(snapshot, mode, costBasis)
               fullCost = tonumber(info.effectiveCost) or fullCost
             end
 
+            local potentialPoints = 0
+            if not full and craftable > 0 and p > 0 then
+              potentialPoints = expectedSkillPoints(recipe, skill, maxSkill, craftable)
+              local remainingCap = maxSkill > 0 and (maxSkill - skill) or craftable
+              if remainingCap < 0 then remainingCap = 0 end
+              local _, grey = knownThresholds(recipe)
+              if grey then
+                local remGrey = grey - math.floor(tonumber(skill) or 0)
+                if remGrey < 0 then remGrey = 0 end
+                remainingCap = math.min(remainingCap, remGrey)
+              end
+              if potentialPoints > remainingCap then potentialPoints = remainingCap end
+            end
+
             local entry = {
               recipe = recipe,
               p = p,
@@ -545,6 +621,7 @@ function Skilly.Rank.Best(snapshot, mode, costBasis)
               craftable = full and 0 or craftable,
               missing = missing,
               onHandOnly = not full and craftable > 0,
+              potentialPoints = potentialPoints,
               score = score,
               expectedCrafts = display,
               probabilitySource = source,
@@ -567,6 +644,10 @@ function Skilly.Rank.Best(snapshot, mode, costBasis)
   if cheap then
     compare = function(a, b)
       if a.score ~= b.score then return a.score < b.score end
+      if a.p ~= b.p then return a.p > b.p end
+      local ap = tonumber(a.potentialPoints) or 0
+      local bp = tonumber(b.potentialPoints) or 0
+      if ap ~= bp then return ap > bp end
       local ma, mb = meta[a], meta[b]
       if ma.grade ~= mb.grade then return ma.grade < mb.grade end
       local aComplex = ma.estimated + ma.crossSkill
@@ -577,7 +658,11 @@ function Skilly.Rank.Best(snapshot, mode, costBasis)
     end
   else
     compare = function(a, b)
+      local ap = tonumber(a.potentialPoints) or 0
+      local bp = tonumber(b.potentialPoints) or 0
+      if ap ~= bp then return ap > bp end
       if a.p ~= b.p then return a.p > b.p end
+      if a.score ~= b.score then return a.score < b.score end
       if a.cost ~= b.cost then return a.cost < b.cost end
       local ma, mb = meta[a], meta[b]
       if ma.madeMax ~= mb.madeMax then return ma.madeMax > mb.madeMax end
@@ -720,13 +805,56 @@ local function sourceLabel(source)
   return "unknown"
 end
 
+local function resolveMissingName(row)
+  local name = type(row.name) == "string" and row.name or nil
+  local key = type(row.key) == "string" and row.key or ""
+  local itemID = tonumber(string.match(key, "^item:(%d+)$"))
+  local needsResolve = not name or name == "" or name == "material"
+      or string.match(name, "^Item %d+$") or string.match(name, "^item:%d+$")
+  if needsResolve and itemID then
+    local citem = _G.C_Item
+    if type(citem) == "table" then
+      if type(citem.GetItemNameByID) == "function" then
+        local ok, n2 = pcall(citem.GetItemNameByID, itemID)
+        if ok and type(n2) == "string" and n2 ~= "" then name = n2 end
+      end
+      if needsResolve and (not name or string.match(name, "^Item %d+$") or string.match(name, "^item:%d+$"))
+          and type(citem.GetItemInfo) == "function" then
+        local ok, infoName, link = pcall(citem.GetItemInfo, itemID)
+        if ok and type(infoName) == "string" and infoName ~= "" then name = infoName end
+        if (not name or name == "" or string.match(name, "^Item %d+$")) and type(link) == "string" then
+          local linkName = string.match(link, "%[(.+)%]")
+          if type(linkName) == "string" and linkName ~= "" then name = linkName end
+        end
+      end
+      if (not name or string.match(name, "^Item %d+$") or string.match(name, "^item:%d+$"))
+          and type(citem.RequestLoadItemDataByID) == "function" then
+        pcall(citem.RequestLoadItemDataByID, itemID)
+      end
+    end
+    if (not name or string.match(name, "^Item %d+$") or string.match(name, "^item:%d+$"))
+        and type(_G.GetItemInfo) == "function" then
+      local ok, infoName, link = pcall(_G.GetItemInfo, itemID)
+      if ok and type(infoName) == "string" and infoName ~= "" then name = infoName end
+      if (not name or name == "" or string.match(name, "^Item %d+$")) and type(link) == "string" then
+        local linkName = string.match(link, "%[(.+)%]")
+        if type(linkName) == "string" and linkName ~= "" then name = linkName end
+      end
+    end
+  end
+  if not name or name == "" then
+    if itemID then name = "item:" .. itemID else name = "material" end
+  end
+  return name
+end
+
 local function describeMissing(missing)
   local parts = {}
   if type(missing) ~= "table" then return "" end
   local showSource = featureEnabled("showSourceLabels", true)
   for _, row in ipairs(missing) do
     if type(row) == "table" and (tonumber(row.need) or 0) > 0 then
-      local name = type(row.name) == "string" and row.name or "material"
+      local name = resolveMissingName(row)
       local text = formatCount(row.need) .. " x " .. name
       if showSource then text = text .. " (" .. sourceLabel(row.source) .. ")" end
       parts[#parts + 1] = text

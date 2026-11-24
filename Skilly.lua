@@ -64,56 +64,60 @@ function Skilly.InitSettings()
     api.RegisterAddOnCategory(category)
     Skilly.settingsCategory = category
 
-    local function addSetting(name, variable, defaultValue, getter, setter)
+    local function addSetting(name, variable, defaultValue, getter, setter, group)
       return api.RegisterProxySetting(
-        category, variable, type(defaultValue), name, defaultValue, getter, setter
+        group or category, variable, type(defaultValue), name, defaultValue, getter, setter
       )
     end
 
-    local function addCheckbox(name, variable, defaultValue, getter, setter, tooltip)
-      local setting = addSetting(name, variable, defaultValue, getter, setter)
-      api.CreateCheckbox(category, setting, tooltip)
+    local function addCheckbox(name, variable, defaultValue, getter, setter, tooltip, group)
+      local setting = addSetting(name, variable, defaultValue, getter, setter, group)
+      api.CreateCheckbox(group or category, setting, tooltip)
     end
 
-    local function addModeCheckbox()
-      addCheckbox(
-        "Best skillup mode", "SKILLY_BEST_MODE", false,
-        function() return dbGet("mode") == "best" end,
-        function(value)
-          dbSet("mode", value == true and "best" or "cheap")
-        end,
-        "On: best skillup. Off: cheapest available skillup."
-      )
-    end
-
-    local modeSetting = addSetting(
-      "Mode", "SKILLY_MODE", "cheap",
-      function()
-        if dbGet("mode") == "best" then return "best" end
-        return "cheap"
-      end,
-      function(value)
-        dbSet("mode", value == "best" and "best" or "cheap")
+    local function addGroup(name)
+      if api.CreateVerticalLayoutSubcategory then
+        local okSub, sub = pcall(api.CreateVerticalLayoutSubcategory, category, name)
+        if okSub and sub then return sub end
       end
+      return category
+    end
+
+    local general = addGroup("General")
+    local prices = addGroup("Prices")
+    local ranking = addGroup("Ranking")
+    local output = addGroup("Output")
+
+    addCheckbox(
+      "Best skillup mode", "SKILLY_BEST_MODE", false,
+      function() return dbGet("mode") == "best" end,
+      function(value) dbSet("mode", value == true and "best" or "cheap") end,
+      "On: best skillup. Off: cheapest available skillup.",
+      general
     )
-
-    if api.CreateDropdown then
-      local options = {
-        { text = "Cheapest available", value = "cheap" },
-        { text = "Best skillup", value = "best" },
-      }
-      if not pcall(api.CreateDropdown, category, modeSetting, options) then
-        addModeCheckbox()
-      end
-    else
-      addModeCheckbox()
-    end
 
     addCheckbox(
       "Include bank", "SKILLY_INCLUDE_BANK", false,
       function() return dbGet("includeBank") == true end,
       function(value) dbSet("includeBank", value == true) end,
-      "Count reagents in the bank as well as in bags."
+      "Count reagents in the bank as well as in bags.",
+      general
+    )
+
+    addCheckbox(
+      "Show minimap button", "SKILLY_MINIMAP_VISIBLE", true,
+      function()
+        local m = dbGet("minimap")
+        return type(m) ~= "table" or m.visible ~= false
+      end,
+      function(value)
+        local m = dbGet("minimap")
+        if type(m) ~= "table" then m = {} end
+        m.visible = (value == true)
+        dbSet("minimap", m)
+      end,
+      "Show the launcher button near the minimap.",
+      general
     )
 
     addCheckbox(
@@ -130,7 +134,8 @@ function Skilly.InitSettings()
           pcall(Skilly.ResetSourceCache)
         end
       end,
-      "Allow missing mats when a real AH or vendor price is known."
+      "Allow missing mats when a real AH or vendor price is known.",
+      prices
     )
 
     local countSetting = addSetting(
@@ -146,52 +151,42 @@ function Skilly.InitSettings()
         dbSet("resultCount", n)
       end
     )
-    api.CreateSlider(
-      category, countSetting, api.CreateSliderOptions(1, 10, 1),
-      "Maximum number of recipes shown."
-    )
+    local sliderOpts = api.CreateSliderOptions(1, 10, 1)
+    if type(sliderOpts) == "table" and type(sliderOpts.SetLabelFormatter) == "function" then
+      pcall(sliderOpts.SetLabelFormatter, sliderOpts, MinimalSliderWithSteppersMixin and MinimalSliderWithSteppersMixin.Label and MinimalSliderWithSteppersMixin.Label.Right or nil, function(value)
+        local n = math.floor(tonumber(value) or 5)
+        return tostring(n)
+      end)
+    end
+    local okSlider = pcall(api.CreateSlider, category, countSetting, sliderOpts, "Maximum number of recipes shown (1-10).")
+    if not okSlider then
+      pcall(api.CreateSlider, output, countSetting, sliderOpts, "Maximum number of recipes shown (1-10).")
+    end
 
-    addCheckbox(
-      "Show minimap button", "SKILLY_MINIMAP_VISIBLE", true,
-      function()
-        local m = dbGet("minimap")
-        return type(m) ~= "table" or m.visible ~= false
-      end,
-      function(value)
-        local m = dbGet("minimap")
-        if type(m) ~= "table" then m = {} end
-        m.visible = (value == true)
-        dbSet("minimap", m)
-      end,
-      "Show the launcher button near the minimap."
-    )
-
-    -- SB-43: generate one checkbox per registry row, grouped by category.
-    local categoryOrder = { "Prices", "Ranking", "Output" }
-    local features = type(Skilly.Features) == "table"
-        and Skilly.Features or {}
-    for _, categoryName in ipairs(categoryOrder) do
+    local groupByCategory = { Prices = prices, Ranking = ranking, Output = output }
+    local features = type(Skilly.Features) == "table" and Skilly.Features or {}
+    for _, categoryName in ipairs({ "Prices", "Ranking", "Output" }) do
+      local group = groupByCategory[categoryName] or category
       for _, row in ipairs(features) do
         local f = row
         if type(f) == "table" and f.category == categoryName
             and type(f.key) == "string" and f.key ~= "" then
           local defaultValue = f.default == true
           addCheckbox(
-            categoryName .. ": " .. tostring(f.label or f.key),
+            tostring(f.label or f.key),
             "SKILLY_FEATURE_" .. string.upper(f.key),
             defaultValue,
             function() return featureEnabled(f.key, defaultValue) end,
             function(value)
               if type(SkillyDB) ~= "table" then SkillyDB = {} end
-              if type(SkillyDB.features) ~= "table" then
-                SkillyDB.features = {}
-              end
+              if type(SkillyDB.features) ~= "table" then SkillyDB.features = {} end
               SkillyDB.features[f.key] = (value == true)
               if type(Skilly.ResetSourceCache) == "function" then
                 pcall(Skilly.ResetSourceCache)
               end
             end,
-            type(f.tooltip) == "string" and f.tooltip or nil
+            type(f.tooltip) == "string" and f.tooltip or nil,
+            group
           )
         end
       end
@@ -210,11 +205,12 @@ local function missingPiece(name)
   Skilly.Print("Recommendation unavailable: missing " .. name .. ".")
 end
 
-function Skilly.Recommend(mode)
+function Skilly.Recommend(mode, opts)
   local wanted = mode
   if wanted ~= "best" and wanted ~= "cheap" then
     wanted = dbGet("mode") == "best" and "best" or "cheap"
   end
+  local explicit = type(opts) == "table" and opts.explicit == true
 
   local scan = type(Skilly.Scan) == "table" and Skilly.Scan.Current or nil
   if type(scan) ~= "function" then
@@ -257,7 +253,7 @@ function Skilly.Recommend(mode)
   local printResults = type(Skilly.UI) == "table"
       and Skilly.UI.PrintResults or nil
   if type(printResults) == "function" then
-    local okPrint, err = pcall(printResults, entries, fullEntries)
+    local okPrint, err = pcall(printResults, entries, fullEntries, { explicit = explicit, mode = wanted })
     if not okPrint then Skilly.Print("Output failed: " .. tostring(err)) end
     return
   end
@@ -286,7 +282,7 @@ function Skilly.Recommend(mode)
 end
 
 Skilly.RegisterCommand("next", function()
-  Skilly.Recommend()
+  Skilly.Recommend(nil, { explicit = true })
 end, {
   usage = "/skilly next",
   description = "Show the recommended next craft in the current mode.",
@@ -294,7 +290,7 @@ end, {
 
 Skilly.RegisterCommand("best", function()
   dbSet("mode", "best")
-  Skilly.Recommend("best")
+  Skilly.Recommend("best", { explicit = true })
 end, {
   usage = "/skilly best",
   description = "Recommend the recipe with the highest skill-up chance.",
@@ -302,7 +298,7 @@ end, {
 
 Skilly.RegisterCommand("cheap", function()
   dbSet("mode", "cheap")
-  Skilly.Recommend("cheap")
+  Skilly.Recommend("cheap", { explicit = true })
 end, {
   usage = "/skilly cheap",
   description = "Recommend the cheapest skill-up, counting materials you can buy.",
@@ -666,32 +662,59 @@ end, {
 })
 
 -- SB-52: factual, copyable evidence for feedback. It never changes ranking.
-local function printDebugEvidence(entry, snapshot)
-  local recipe = type(entry.recipe) == "table" and entry.recipe or nil
-  if not recipe then return end
-
+local function debugComparatorLine(entry, snapshot, mode, index)
+  if type(entry) ~= "table" then return "evidence: n/a" end
+  local recipe = type(entry.recipe) == "table" and entry.recipe or {}
   local color = "unknown"
   local detect = Skilly.Difficulty and Skilly.Difficulty.Detect
   if type(detect) == "function" then
     local ok, info = pcall(detect, recipe.difficulty)
-    if ok and type(info) == "table" and type(info.color) == "string" then
+    if ok and type(info) == "table" and type(info.color) == "string" and info.color ~= "" then
       color = info.color
     end
   end
-
-  Skilly.Print("evidence: " .. tostring(recipe.name or "recipe")
-      .. " - skill=" .. tostring(tonumber(snapshot and snapshot.skill) or "?")
-      .. "/" .. tostring(tonumber(snapshot and snapshot.maxSkill) or "?")
-      .. ", spellID=" .. tostring(recipe.spellID or "unknown")
-      .. ", raw=" .. tostring(recipe.difficulty or "unknown")
-      .. ", color=" .. color
-      .. ", p=" .. tostring(entry.p or 0)
-      .. ", threshold=" .. tostring(recipe.thresholdSource or "unknown")
+  local missing = type(entry.missing) == "table" and entry.missing or {}
+  local missingCount, missingOwned, missingNeed = 0, 0, 0
+  for _, row in ipairs(missing) do
+    if type(row) == "table" then
+      local need = tonumber(row.need) or 0
+      if need > 0 then
+        missingCount = missingCount + 1
+        missingNeed = missingNeed + need
+        missingOwned = missingOwned + (tonumber(row.owned) or 0)
+      end
+    end
+  end
+  local prefix = "evidence:"
+  if type(index) == "number" then prefix = "evidence: row=" .. tostring(index) end
+  return prefix .. ", mode=" .. tostring(mode or "n/a")
+      .. ", profession=" .. tostring(snapshot and snapshot.profession or "n/a")
+      .. ", skill=" .. tostring(tonumber(snapshot and snapshot.skill) or "n/a")
+      .. "/" .. tostring(tonumber(snapshot and snapshot.maxSkill) or "n/a")
+      .. ", name=" .. tostring(recipe.name or "n/a")
+      .. ", spellID=" .. tostring(recipe.spellID or recipe.id or recipe.key or "n/a")
+      .. ", raw=" .. tostring(recipe.difficulty or "n/a")
+      .. ", color=" .. tostring(color)
+      .. ", p=" .. tostring(entry.p ~= nil and entry.p or "n/a")
+      .. ", threshold=" .. tostring(recipe.thresholdSource or "n/a")
+      .. ", expectedCrafts=" .. tostring(entry.expectedCrafts ~= nil and entry.expectedCrafts or "n/a")
+      .. ", probSource=" .. tostring(entry.probabilitySource or "n/a")
+      .. ", costBasis=" .. tostring(entry.costBasis or "n/a")
+      .. ", score=" .. tostring(entry.score ~= nil and entry.score or "n/a")
+      .. ", potentialPoints=" .. tostring(entry.potentialPoints ~= nil and entry.potentialPoints or "n/a")
+      .. ", craftable=" .. tostring(entry.craftable ~= nil and entry.craftable or "n/a")
+      .. ", missingKinds=" .. tostring(missingCount)
+      .. ", missingNeed=" .. tostring(missingNeed)
+      .. ", missingOwned=" .. tostring(missingOwned)
       .. ", learned=" .. tostring(recipe.learned)
-      .. ", learnable=" .. tostring(recipe.learnable))
+      .. ", learnable=" .. tostring(recipe.learnable)
 end
 
-local function printDebugEntry(entry, label, snapshot)
+local function printDebugEvidence(entry, snapshot, mode, index)
+  Skilly.Print(debugComparatorLine(entry, snapshot, mode, index))
+end
+
+local function printDebugEntry(entry, label, snapshot, mode, index)
   if type(entry) ~= "table" then return end
   if type(Skilly.Rank) == "table" and type(Skilly.Rank.Describe) == "function" then
     local ok, line = pcall(Skilly.Rank.Describe, entry)
@@ -699,7 +722,7 @@ local function printDebugEntry(entry, label, snapshot)
       Skilly.Print(label .. ": " .. line)
     end
   end
-  printDebugEvidence(entry, snapshot)
+  printDebugEvidence(entry, snapshot, mode, index)
   if type(Skilly.Rank) == "table" and type(Skilly.Rank.DescribeHints) == "function" then
     local ok, lines = pcall(Skilly.Rank.DescribeHints, entry)
     if ok and type(lines) == "table" then
@@ -710,15 +733,49 @@ local function printDebugEntry(entry, label, snapshot)
   end
   if type(entry.missing) ~= "table" then return end
   if not featureEnabled("showMissing", true) then return end
-  local label = entry.costBasis == "full"
+  local mlabel = entry.costBasis == "full"
       and "missing (full material cost)" or "missing"
   local showSource = featureEnabled("showSourceLabels", true)
   for _, row in ipairs(entry.missing) do
     if type(row) == "table" and (tonumber(row.need) or 0) > 0 then
       local name = type(row.name) == "string" and row.name or "material"
+      local key = type(row.key) == "string" and row.key or ""
+      local itemID = tonumber(string.match(key, "^item:(%d+)$"))
+      if (name == "material" or string.match(name, "^Item %d+$") or string.match(name, "^item:%d+$")) and itemID then
+        local citem = _G.C_Item
+        if type(citem) == "table" then
+          if type(citem.GetItemNameByID) == "function" then
+            local okN, n2 = pcall(citem.GetItemNameByID, itemID)
+            if okN and type(n2) == "string" and n2 ~= "" then name = n2 end
+          end
+          if (name == "material" or string.match(name, "^Item %d+$") or string.match(name, "^item:%d+$"))
+              and type(citem.GetItemInfo) == "function" then
+            local okN, n2, link = pcall(citem.GetItemInfo, itemID)
+            if okN and type(n2) == "string" and n2 ~= "" then name = n2
+            elseif okN and type(link) == "string" then
+              local ln = string.match(link, "%[(.+)%]")
+              if type(ln) == "string" and ln ~= "" then name = ln end
+            end
+          end
+          if (name == "material" or string.match(name, "^Item %d+$") or string.match(name, "^item:%d+$"))
+              and type(citem.RequestLoadItemDataByID) == "function" then
+            pcall(citem.RequestLoadItemDataByID, itemID)
+          end
+        end
+        if (name == "material" or string.match(name, "^Item %d+$") or string.match(name, "^item:%d+$"))
+            and type(_G.GetItemInfo) == "function" then
+          local okN, n2, link = pcall(_G.GetItemInfo, itemID)
+          if okN and type(n2) == "string" and n2 ~= "" then name = n2
+          elseif okN and type(link) == "string" then
+            local ln = string.match(link, "%[(.+)%]")
+            if type(ln) == "string" and ln ~= "" then name = ln end
+          end
+        end
+      end
+      if (name == "material" or string.match(name, "^Item %d+$")) and itemID then name = "item:" .. itemID end
       local sourceText = showSource
           and " (" .. debugSourceLabel(row.source) .. ")" or ""
-      Skilly.Print(label .. ": " .. tostring(row.need) .. " x " .. name
+      Skilly.Print(mlabel .. ": " .. tostring(row.need) .. " x " .. name
           .. " - need " .. tostring(row.need)
           .. ", owned " .. tostring(row.owned or 0)
           .. ", price " .. formatCopper(row.price)
@@ -840,7 +897,7 @@ local function printDebugReport()
 
   local okCheap, cheap = pcall(Skilly.Rank.Best, snapshot, "cheap")
   if okCheap and type(cheap) == "table" and cheap[1] then
-    printDebugEntry(cheap[1], "on-hand winner", snapshot)
+    printDebugEntry(cheap[1], "on-hand winner", snapshot, "cheap", 1)
   else
     Skilly.Print("No recipes qualify in cheap mode.")
   end
@@ -867,8 +924,9 @@ local function printDebugReport()
     if sameAsCheap then
       Skilly.Print("full material cost winner: same as on-hand winner ("
           .. tostring(fullTop.recipe and fullTop.recipe.name or "recipe") .. ")")
+      printDebugEvidence(fullTop, snapshot, "cheap-full", 1)
     else
-      printDebugEntry(fullTop, "full material cost winner", snapshot)
+      printDebugEntry(fullTop, "full material cost winner", snapshot, "cheap-full", 1)
     end
   end
 
@@ -877,7 +935,26 @@ local function printDebugReport()
     local same = (okCheap and type(cheap) == "table" and cheap[1]
         and cheap[1].recipe == best[1].recipe)
         or (type(fullTop) == "table" and fullTop.recipe == best[1].recipe)
-    if not same then printDebugEntry(best[1], "best winner", snapshot) end
+    if not same then printDebugEntry(best[1], "best winner", snapshot, "best", 1) end
+  end
+
+  -- SB-68: include bounded per-row comparator evidence for visible NEXT rows.
+  local maxRows = 5
+  if type(SkillyDB) == "table" then maxRows = tonumber(SkillyDB.resultCount) or 5 end
+  maxRows = math.max(1, math.min(10, math.floor(maxRows)))
+  if okCheap and type(cheap) == "table" then
+    for i = 2, math.min(#cheap, maxRows) do
+      printDebugEvidence(cheap[i], snapshot, "cheap", i)
+    end
+  end
+  if okBest and type(best) == "table" then
+    for i = 1, math.min(#best, maxRows) do
+      local e = best[i]
+      local sameCheap = okCheap and type(cheap) == "table" and cheap[i] and cheap[i].recipe == e.recipe
+      if not sameCheap then
+        printDebugEvidence(e, snapshot, "best", i)
+      end
+    end
   end
 
   printNearMisses(snapshot, 3)
@@ -959,7 +1036,7 @@ function Skilly.Command(msg)
 
   local cmd = string.match(msg, "^%S+")
   if not cmd then
-    Skilly.Recommend()
+    Skilly.Recommend(nil, { explicit = true })
     return
   end
 

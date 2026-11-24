@@ -61,9 +61,56 @@ if bindingButton then
   end)
 end
 
--- SB-18/SB-54: chat is authoritative; a result window (SB-17) is optional.
--- Every external call is type-checked and pcall-wrapped.
-function Skilly.UI.PrintResults(entries, fullEntries)
+local function chatRecommendationsEnabled()
+  if type(Skilly.FeatureEnabled) ~= "function" then return true end
+  local ok, value = pcall(Skilly.FeatureEnabled, "showChatRecommendations", true)
+  if ok and type(value) == "boolean" then return value end
+  return true
+end
+
+local function highlightRecommendedEnabled()
+  if type(Skilly.FeatureEnabled) ~= "function" then return false end
+  local ok, value = pcall(Skilly.FeatureEnabled, "highlightRecommendedRecipe", false)
+  return ok and value == true
+end
+
+local function safeRecipeID(entry)
+  if type(entry) ~= "table" then return nil end
+  local r = type(entry.recipe) == "table" and entry.recipe or entry
+  local id = tonumber(r.spellID or r.recipeID or r.id)
+  if not id or id <= 0 or id ~= math.floor(id) then return nil end
+  return math.floor(id)
+end
+
+local lastRecommendationSignature = nil
+local lastHighlightSignature = nil
+local lastHighlightRecipeID = nil
+
+local function recommendationSignature(entries, fullEntries, mode)
+  if type(entries) ~= "table" or type(entries[1]) ~= "table" then return nil end
+  local function entryKey(entry)
+    if type(entry) ~= "table" then return "nil" end
+    local r = type(entry.recipe) == "table" and entry.recipe or {}
+    local id = r.spellID or r.id or r.key or r.name or "?"
+    local p = tonumber(entry.p) or 0
+    local c = tonumber(entry.craftable) or 0
+    local s = tonumber(entry.score) or 0
+    local pp = math.floor((tonumber(entry.potentialPoints) or 0) * 1000 + 0.5)
+    return table.concat({ tostring(id), string.format("%.4f", p), tostring(c), string.format("%.4f", s), tostring(pp) }, ":")
+  end
+  local parts = { tostring(mode or ""), entryKey(entries[1]), entryKey(type(fullEntries) == "table" and fullEntries[1] or nil) }
+  local limit = math.min(#entries, 3)
+  for i = 2, limit do parts[#parts + 1] = entryKey(entries[i]) end
+  return table.concat(parts, "|")
+end
+
+local maybeHighlightRecommended
+
+
+
+-- SB-18/SB-54/SB-71/SB-72: chat is authoritative/fallback; a result window (SB-17) is optional.
+-- Automatic calls suppress unchanged recommendations; explicit commands always print.
+function Skilly.UI.PrintResults(entries, fullEntries, opts)
   if type(entries) ~= "table" or type(entries[1]) ~= "table" then
     Skilly.Print("No recipes qualify in this mode.")
     return
@@ -72,6 +119,31 @@ function Skilly.UI.PrintResults(entries, fullEntries)
     Skilly.Print("Recommendation unavailable: missing Skilly.Rank.Describe")
     return
   end
+
+  local explicit = type(opts) == "table" and opts.explicit == true
+  local mode = type(opts) == "table" and opts.mode or nil
+  local sig = recommendationSignature(entries, fullEntries, mode)
+  if not explicit and sig and sig == lastRecommendationSignature then
+    if type(Skilly.UI.ShowResults) == "function" then
+      pcall(Skilly.UI.ShowResults, entries)
+    end
+    return
+  end
+
+  local showWindow = type(Skilly.UI.ShowResults) == "function"
+  local windowShown = false
+  if showWindow then
+    local okShow, shown = pcall(Skilly.UI.ShowResults, entries)
+    windowShown = okShow and shown == true
+  end
+  pcall(maybeHighlightRecommended, entries)
+  local chatEnabled = chatRecommendationsEnabled()
+  if not chatEnabled and windowShown then
+    lastRecommendationSignature = sig
+    return
+  end
+
+  lastRecommendationSignature = sig
 
   local top = entries[1]
   local ok, line = pcall(Skilly.Rank.Describe, top)
@@ -100,15 +172,15 @@ function Skilly.UI.PrintResults(entries, fullEntries)
     end
   end
 
-  for i = 2, math.min(#entries, 4) do
+  local resultCount = 5
+  if type(SkillyDB) == "table" then resultCount = tonumber(SkillyDB.resultCount) or 5 end
+  local maxLines = math.floor(resultCount)
+  if maxLines < 1 then maxLines = 1 elseif maxLines > 10 then maxLines = 10 end
+  for i = 2, math.min(#entries, maxLines) do
     local okRow, row = pcall(Skilly.Rank.Describe, entries[i])
     if okRow and type(row) == "string" and row ~= "" then
       Skilly.Print(i .. ") " .. row)
     end
-  end
-
-  if type(Skilly.UI.ShowResults) == "function" then
-    pcall(Skilly.UI.ShowResults, entries)
   end
 end
 
@@ -124,10 +196,51 @@ local lastEntries = nil
 local inSpecialFrames = false
 local resultsDefaultPoint = { point = "CENTER", rel = "UIParent", relPoint = "CENTER", x = 0, y = 0 }
 local resultsAnchored = false
+local resultsAnchorEnabledAtShow = false
 local professionsHooked = false
 local autoAdviceOpen = false
 local autoAdviceSignature = nil
 local autoAdviceAt = 0
+
+local function tradeSkillLinkedOrGuild()
+  local fn = _G.IsTradeSkillLinked
+  if type(fn) == "function" then
+    local ok, linked, name = pcall(fn)
+    if ok and (linked == true or (type(name) == "string" and name ~= "")) then
+      return true
+    end
+  end
+  fn = _G.IsTradeSkillGuild
+  if type(fn) == "function" then
+    local ok, isGuild = pcall(fn)
+    if ok and isGuild == true then return true end
+  end
+  return false
+end
+
+maybeHighlightRecommended = function(entries)
+  if not highlightRecommendedEnabled() then return end
+  if not autoAdviceOpen then return end
+  if tradeSkillLinkedOrGuild() then return end
+  if type(entries) ~= "table" or type(entries[1]) ~= "table" then return end
+  local top = entries[1]
+  local recipeID = safeRecipeID(top)
+  if not recipeID then return end
+  local sig = recommendationSignature(entries, nil, nil)
+  if sig and sig == lastHighlightSignature and recipeID == lastHighlightRecipeID then return end
+
+  local api = _G.C_TradeSkillUI
+  if type(api) ~= "table" then return end
+  local openRecipe = api.OpenRecipe
+  if type(openRecipe) ~= "function" then return end
+  local ok = pcall(openRecipe, recipeID)
+  if ok then
+    lastHighlightSignature = sig
+    lastHighlightRecipeID = recipeID
+  end
+end
+local RESULTS_FRAME_WIDTH = 420
+local RESULTS_ANCHOR_GAP = 8
 
 local function autoAdviceEnabled()
   if type(Skilly.FeatureEnabled) ~= "function" then return false end
@@ -147,21 +260,7 @@ local function nowSeconds()
   return 0
 end
 
-local function tradeSkillLinkedOrGuild()
-  local fn = _G.IsTradeSkillLinked
-  if type(fn) == "function" then
-    local ok, linked, name = pcall(fn)
-    if ok and (linked == true or (type(name) == "string" and name ~= "")) then
-      return true
-    end
-  end
-  fn = _G.IsTradeSkillGuild
-  if type(fn) == "function" then
-    local ok, isGuild = pcall(fn)
-    if ok and isGuild == true then return true end
-  end
-  return false
-end
+
 
 local function snapshotSignature(snapshot)
   if type(snapshot) ~= "table" then return nil end
@@ -171,6 +270,16 @@ local function snapshotSignature(snapshot)
   local count = type(snapshot.recipes) == "table" and #snapshot.recipes or 0
   local sourceCounter = tonumber(snapshot.sourceCounter) or 0
   return table.concat({ profession, skill, maxSkill, count, sourceCounter }, ":")
+end
+
+local function autoAdviceSignatureForSnapshot(snapshot)
+  if type(snapshot) ~= "table" then return nil end
+  local profession = type(snapshot.profession) == "string" and snapshot.profession or ""
+  local skill = tonumber(snapshot.skill) or 0
+  local maxSkill = tonumber(snapshot.maxSkill) or 0
+  local count = type(snapshot.recipes) == "table" and #snapshot.recipes or 0
+  -- sourceCounter excluded: benign refreshes can bump it and cause spam.
+  return table.concat({ profession, skill, maxSkill, count }, ":")
 end
 
 local function maybeAutoAdvice(event)
@@ -184,13 +293,12 @@ local function maybeAutoAdvice(event)
   if not ok or type(snapshot) ~= "table" then return end
   if type(snapshot.profession) ~= "string" or snapshot.profession == "" then return end
 
-  local sig = snapshotSignature(snapshot)
+  local sig = autoAdviceSignatureForSnapshot(snapshot)
   if not sig then return end
-  local t = nowSeconds()
-  if sig == autoAdviceSignature and (t - autoAdviceAt) < 2 then return end
+  if sig == autoAdviceSignature then return end
 
   autoAdviceSignature = sig
-  autoAdviceAt = t
+  autoAdviceAt = nowSeconds()
   if type(Skilly.Recommend) == "function" then
     pcall(Skilly.Recommend)
   end
@@ -210,6 +318,60 @@ local function professionsFrameVisible()
   return nil
 end
 
+local function safeFrameWidth(frame)
+  if not frame then return nil end
+  local ok, w = pcall(function() return frame:GetWidth() end)
+  if ok and type(w) == "number" and w > 0 then return w end
+  return nil
+end
+
+local function anchorTargetForProfessionsFrame(prof)
+  if not prof then return nil, nil end
+  local sidebar = _G.ProfessionsFrameTabSideBar
+  if sidebar then
+    local okShown, shown = pcall(function() return sidebar:IsShown() end)
+    if okShown and shown == true then
+      local w = safeFrameWidth(sidebar)
+      if w then return sidebar, w + RESULTS_ANCHOR_GAP end
+    end
+  end
+  local w = safeFrameWidth(prof)
+  return prof, (w or 700) + RESULTS_ANCHOR_GAP
+end
+
+local function applyResultsLayout()
+  if not resultsFrame then return end
+  local enabled = companionAnchorEnabled()
+  local prof = enabled and professionsFrameVisible() or nil
+  local anchorTarget, offsetX = anchorTargetForProfessionsFrame(prof)
+  local anchored = prof ~= nil
+
+  pcall(function() resultsFrame:SetWidth(RESULTS_FRAME_WIDTH) end)
+  pcall(function()
+    resultsFrame:ClearAllPoints()
+    if anchored and anchorTarget then
+      resultsFrame:SetPoint("TOPLEFT", anchorTarget, "TOPLEFT", offsetX, 0)
+    else
+      local rel = _G[resultsDefaultPoint.rel] or _G.UIParent
+      resultsFrame:SetPoint(resultsDefaultPoint.point, rel, resultsDefaultPoint.relPoint, resultsDefaultPoint.x, resultsDefaultPoint.y)
+    end
+  end)
+  resultsAnchored = anchored
+
+  local contentWidth = RESULTS_FRAME_WIDTH - 32
+  for _, row in ipairs(resultsRows) do
+    if row then
+      for _, fs in ipairs({ row.name, row.detail }) do
+        if fs then
+          pcall(function() fs:SetWidth(contentWidth) end)
+          if hasMethod(fs, "SetWordWrap") then pcall(function() fs:SetWordWrap(true) end) end
+          if hasMethod(fs, "SetNonSpaceWrap") then pcall(function() fs:SetNonSpaceWrap(true) end) end
+        end
+      end
+    end
+  end
+end
+
 local function restoreResultsDefaultPoint()
   if not resultsFrame then return end
   pcall(function()
@@ -224,17 +386,10 @@ function Skilly.UI.UpdateCompanionAnchor()
   if not resultsFrame then return false end
   local enabled = companionAnchorEnabled()
   local prof = enabled and professionsFrameVisible() or nil
-  if prof then
-    local ok = pcall(function()
-      resultsFrame:ClearAllPoints()
-      resultsFrame:SetPoint("TOPLEFT", prof, "TOPRIGHT", 8, 0)
-    end)
-    if ok then
-      resultsAnchored = true
-      return true
-    end
+  if enabled and prof then
+    applyResultsLayout()
+    return true
   end
-
   if resultsAnchored then restoreResultsDefaultPoint() end
   return false
 end
@@ -271,6 +426,15 @@ function Skilly.UI.OnProfessionsWindowEvent(event)
     autoAdviceOpen = false
     autoAdviceSignature = nil
     autoAdviceAt = 0
+    lastHighlightSignature = nil
+    lastHighlightRecipeID = nil
+    if resultsFrame then
+      local okShown, shown = pcall(function() return resultsFrame:IsShown() end)
+      local shouldHide = okShown and shown and (resultsAnchored or (companionAnchorEnabled() and resultsAnchorEnabledAtShow))
+      if shouldHide then
+        pcall(function() resultsFrame:Hide() end)
+      end
+    end
     if resultsAnchored then restoreResultsDefaultPoint() end
     return
   end
@@ -313,7 +477,7 @@ local function buildResultsFrame()
   callMethod(frame, "SetMovable", true)
   callMethod(frame, "EnableMouse", true)
   callMethod(frame, "RegisterForDrag", "LeftButton")
-  callMethod(frame, "SetWidth", 660)
+  callMethod(frame, "SetWidth", RESULTS_FRAME_WIDTH)
   callMethod(frame, "SetHeight", 180)
   callMethod(frame, "SetPoint", "CENTER", 0, 0)
   if plain then
@@ -335,7 +499,8 @@ local function buildResultsFrame()
     callMethod(frame, "StopMovingOrSizing")
   end)
   callMethod(frame, "SetScript", "OnShow", function()
-    pcall(Skilly.UI.UpdateCompanionAnchor)
+    resultsAnchorEnabledAtShow = companionAnchorEnabled()
+    pcall(applyResultsLayout)
   end)
 
   local title = createFontString(frame, "SkillyResultsTitle", "GameFontNormalLarge")
@@ -361,12 +526,33 @@ local function buildResultsFrame()
     end)
   end
 
+  local contentWidth = RESULTS_FRAME_WIDTH - 32
   for i = 1, RESULTS_MAX_ROWS do
+    local header = createFontString(frame, "SkillyResultHeader" .. i,
+        "GameFontNormal")
     local name = createFontString(frame, "SkillyResultName" .. i,
         "GameFontNormal")
     local detail = createFontString(frame, "SkillyResultDetail" .. i,
         "GameFontNormalSmall")
-    resultsRows[i] = { name = name, detail = detail }
+    if header then
+      callMethod(header, "SetWidth", contentWidth)
+      callMethod(header, "SetJustifyH", "LEFT")
+      callMethod(header, "SetTextColor", 1, 0.82, 0, 1)
+    end
+    if name then
+      callMethod(name, "SetWidth", contentWidth)
+      callMethod(name, "SetJustifyH", "LEFT")
+      if hasMethod(name, "SetWordWrap") then callMethod(name, "SetWordWrap", true) end
+      if hasMethod(name, "SetNonSpaceWrap") then callMethod(name, "SetNonSpaceWrap", true) end
+    end
+    if detail then
+      callMethod(detail, "SetWidth", contentWidth)
+      callMethod(detail, "SetJustifyH", "LEFT")
+      if hasMethod(detail, "SetWordWrap") then callMethod(detail, "SetWordWrap", true) end
+      if hasMethod(detail, "SetNonSpaceWrap") then callMethod(detail, "SetNonSpaceWrap", true) end
+    end
+    resultsRows[i] = { header = header, name = name, detail = detail }
+    callMethod(header, "Hide")
     callMethod(name, "Hide")
     callMethod(detail, "Hide")
   end
@@ -382,21 +568,51 @@ local function buildResultsFrame()
   return frame
 end
 
-local function placeRow(row, y, name, detail, recipe)
+local function fontStringHeight(fs, fallback)
+  if not fs then return fallback end
+  local ok, h = pcall(function() return fs:GetStringHeight() end)
+  if ok and type(h) == "number" and h > 0 then return h end
+  return fallback
+end
+
+local function placeRow(row, y, headerText, name, detail, recipe)
   if not row or not row.name or not row.detail then return y end
+  if row.header then
+    if type(headerText) == "string" and headerText ~= "" then
+      callMethod(row.header, "SetText", headerText)
+      callMethod(row.header, "ClearAllPoints")
+      callMethod(row.header, "SetPoint", "TOPLEFT", 14, -y)
+      callMethod(row.header, "Show")
+      y = y + fontStringHeight(row.header, 14) + 4
+    else
+      callMethod(row.header, "Hide")
+    end
+  end
+
   callMethod(row.name, "SetText", name)
   local r, g, b = clientDifficultyColor(recipe)
   if r and g and b then callMethod(row.name, "SetTextColor", r, g, b, 1) end
+  callMethod(row.name, "ClearAllPoints")
   callMethod(row.name, "SetPoint", "TOPLEFT", 14, -y)
   callMethod(row.name, "Show")
+  local nameH = fontStringHeight(row.name, 14)
 
   callMethod(row.detail, "SetText", detail)
-  callMethod(row.detail, "SetPoint", "TOPLEFT", 14, -(y + 14))
+  callMethod(row.detail, "ClearAllPoints")
+  callMethod(row.detail, "SetPoint", "TOPLEFT", 14, -(y + nameH + 2))
   callMethod(row.detail, "Show")
+  local detailH = fontStringHeight(row.detail, 12)
 
-  local lines = math.ceil(#detail / 90)
-  if lines < 1 then lines = 1 elseif lines > 4 then lines = 4 end
-  return y + 16 + lines * 12 + 6
+  return y + nameH + 2 + detailH + 8
+end
+
+local function resultGroup(entry)
+  if type(entry) ~= "table" then return "other" end
+  local craftable = tonumber(entry.craftable) or 0
+  if craftable > 0 then return "now" end
+  local missing = type(entry.missing) == "table" and entry.missing or nil
+  if missing and #missing > 0 then return "buy" end
+  return "other"
 end
 
 function Skilly.UI.ShowResults(entries)
@@ -413,15 +629,25 @@ function Skilly.UI.ShowResults(entries)
   lastEntries = entries
   local count = math.min(#entries, RESULTS_MAX_ROWS)
   local y = 50
+  local lastGroup = nil
   for i = 1, RESULTS_MAX_ROWS do
     local row = resultsRows[i]
     local entry = i <= count and entries[i] or nil
     if not entry then
       if row then
+        if row.header then callMethod(row.header, "Hide") end
         callMethod(row.name, "Hide")
         callMethod(row.detail, "Hide")
       end
     else
+      local group = resultGroup(entry)
+      local headerText = nil
+      if group ~= lastGroup then
+        if group == "now" then headerText = "Make now (materials on hand)"
+        elseif group == "buy" then headerText = "Buy from AH / missing materials"
+        else headerText = "Other recommendations" end
+        lastGroup = group
+      end
       local recipe = type(entry.recipe) == "table" and entry.recipe or {}
       local name = type(recipe.name) == "string" and recipe.name
           or "Unknown recipe"
@@ -437,13 +663,14 @@ function Skilly.UI.ShowResults(entries)
           end
         end
       end
-      y = placeRow(row, y, name, detail, recipe)
+      y = placeRow(row, y, headerText, i .. ". " .. name, detail, recipe)
     end
   end
 
   callMethod(resultsFrame, "SetHeight", math.max(120, y + 16))
   callMethod(resultsFrame, "Show")
-  pcall(Skilly.UI.UpdateCompanionAnchor)
+  resultsAnchorEnabledAtShow = companionAnchorEnabled()
+  pcall(applyResultsLayout)
   return true
 end
 

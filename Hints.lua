@@ -165,10 +165,65 @@ function Skilly.Hints.Status(entry)
   return nil
 end
 
+local function recipeStillGivesSkill(recipe, skill, maxSkill)
+  if type(recipe) ~= "table" then return false end
+  local rank = Skilly.Rank
+  if type(rank) ~= "table" or type(rank.Probability) ~= "function" then return false end
+  local ok, p = pcall(rank.Probability, recipe, skill, maxSkill)
+  return ok and type(p) == "number" and p > 0
+end
+
+-- SB-77: conservative hint when a reagent conversion is the last non-gray
+-- visible use for its input material in the current profession snapshot.
+local function deadEndReagentLines(entry)
+  local lines = {}
+  if type(entry) ~= "table" or type(entry.recipe) ~= "table" then return lines end
+  local recipe = entry.recipe
+  local snap = Skilly.lastSnapshot
+  if type(snap) ~= "table" or type(snap.recipes) ~= "table" then return lines end
+  local skill = positiveInteger(snap.skill, 0, 10000) or 0
+  local maxSkill = positiveInteger(snap.maxSkill, 0, 10000) or 0
+  if not recipeStillGivesSkill(recipe, skill, maxSkill) then return lines end
+
+  local reagents = type(recipe.reagents) == "table" and recipe.reagents or {}
+  for _, reagent in ipairs(reagents) do
+    local key = Skilly.ReagentKey and Skilly.ReagentKey(reagent) or reagent.key
+    if type(key) == "string" and key ~= "" then
+      local otherNonGray = false
+      local otherTotal = 0
+      for _, other in ipairs(snap.recipes) do
+        if type(other) == "table" and other ~= recipe then
+          local ores = type(other.reagents) == "table" and other.reagents or {}
+          for _, orr in ipairs(ores) do
+            local ok2 = Skilly.ReagentKey and Skilly.ReagentKey(orr) or orr.key
+            if ok2 == key then
+              otherTotal = otherTotal + 1
+              if recipeStillGivesSkill(other, skill, maxSkill) then
+                otherNonGray = true
+              end
+              break
+            end
+          end
+        end
+        if otherNonGray then break end
+      end
+      if otherTotal > 0 and not otherNonGray then
+        local name = type(reagent.name) == "string" and reagent.name ~= "" and reagent.name or key
+        lines[#lines + 1] = "Hint: " .. name
+            .. " has no other non-gray recipe in this profession at current skill; converting it may still be worthwhile."
+      end
+    end
+  end
+  return lines
+end
+
 -- SB-48/SB-54: called by Rank.DescribeHints from /skilly next, /skilly debug, and the
 -- copyable export. With no trainer data, no toggle, or no snapshot it is silent.
 function Skilly.Hints.Lines(entry)
   local lines = {}
+  for _, line in ipairs(deadEndReagentLines(entry)) do
+    lines[#lines + 1] = line
+  end
   if not featureEnabled("showUnlockHints") then return lines end
   if not entryIsUsable(entry) then return lines end
 

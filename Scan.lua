@@ -82,17 +82,49 @@ local function difficultyFromRelative(value)
   return nil
 end
 
+local function resolveItemNameByID(id)
+  local n = tonumber(id)
+  if not n or n <= 0 or n ~= math.floor(n) then return nil, nil end
+  n = math.floor(n)
+
+  local citem = _G.C_Item
+  if type(citem) == "table" then
+    if type(citem.GetItemNameByID) == "function" then
+      local ok, name = pcall(citem.GetItemNameByID, n)
+      if ok and type(name) == "string" and name ~= "" then
+        local link = nil
+        if type(citem.GetItemInfo) == "function" then
+          local ok2, _, l = pcall(citem.GetItemInfo, n)
+          if ok2 and type(l) == "string" and l ~= "" then link = l end
+        end
+        return name, link
+      end
+    end
+    if type(citem.GetItemInfo) == "function" then
+      local ok, name, link = pcall(citem.GetItemInfo, n)
+      if ok and type(name) == "string" and name ~= "" then
+        return name, type(link) == "string" and link ~= "" and link or nil
+      end
+    end
+    if type(citem.RequestLoadItemDataByID) == "function" then
+      pcall(citem.RequestLoadItemDataByID, n)
+    end
+  end
+
+  local results = Internal.CallResults(_G.GetItemInfo, n)
+  if results then
+    local name = type(results[1]) == "string" and results[1] ~= "" and results[1] or nil
+    local link = type(results[2]) == "string" and results[2] ~= "" and results[2] or nil
+    if name then return name, link end
+  end
+  return nil, nil
+end
+
 local function itemIdentity(itemID)
   local id = positiveInteger(itemID, nil)
   if not id then return nil end
   local key = "item:" .. id
-  local name = nil
-  local link = nil
-  local results = Internal.CallResults(_G.GetItemInfo, id)
-  if results then
-    if type(results[1]) == "string" and results[1] ~= "" then name = results[1] end
-    if type(results[2]) == "string" and results[2] ~= "" then link = results[2] end
-  end
+  local name, link = resolveItemNameByID(id)
   if not link then link = key end
   return { name = name or ("Item " .. id), key = key, link = link, itemID = id }
 end
