@@ -62,21 +62,29 @@ end
 
 local function countInBags(itemID, name)
   local total = 0
+  local ccontainer = _G.C_Container
+  if type(ccontainer) ~= "table" then return total end
   for bag = 0, 4 do
-    local slots = Internal.CallNumber(_G.GetContainerNumSlots, bag) or 0
+    local slots = Internal.CallNumber(ccontainer.GetContainerNumSlots, bag) or 0
     for slot = 1, slots do
-      local slotID = Internal.CallNumber(_G.GetContainerItemID, bag, slot)
+      local slotID = Internal.CallNumber(ccontainer.GetContainerItemID, bag, slot)
       if slotID and slotID > 0 then
-        -- GetContainerItemInfo returns the stack count as its second value.
-        local info = Internal.SafeResults("GetContainerItemInfo", bag, slot)
-        local stack = info and tonumber(info[2]) or 0
+        local info = Internal.CallResults(ccontainer.GetContainerItemInfo, bag, slot)
+        local info = info and info[1] or nil
+        local stack = 0
+        if type(info) == "table" then
+          stack = tonumber(info.stackCount or info[2]) or 0
+        end
         if stack > 0 then
           if itemID and slotID == itemID then
             total = total + stack
-          elseif not itemID and name and type(_G.GetItemInfo) == "function" then
-            local ok, itemName = pcall(_G.GetItemInfo, slotID)
-            if ok and type(itemName) == "string" and string.lower(itemName) == name then
-              total = total + stack
+          elseif not itemID and name then
+            local citem = _G.C_Item
+            if type(citem) == "table" and type(citem.GetItemNameByID) == "function" then
+              local ok, itemName = pcall(citem.GetItemNameByID, slotID)
+              if ok and type(itemName) == "string" and string.lower(itemName) == name then
+                total = total + stack
+              end
             end
           end
         end

@@ -137,20 +137,25 @@ local function captureCounts()
   local counts = {}
   local keyCount = 0
 
+  local ccontainer = _G.C_Container
+  if type(ccontainer) ~= "table" then return nil, "C_Container unavailable" end
   for _, bag in ipairs(BANK_BAGS) do
-    local slots, slotsOk = safeNumber(_G.GetContainerNumSlots, bag)
+    local slots, slotsOk = safeNumber(ccontainer.GetContainerNumSlots, bag)
     if not slotsOk then
       return nil, "container slots unreadable"
     end
     slots = positiveInt(slots) or 0
     for slot = 1, slots do
       local okSlot = pcall(function()
-        local itemID = Internal.CallNumber(_G.GetContainerItemID, bag, slot)
+        local itemID = Internal.CallNumber(ccontainer.GetContainerItemID, bag, slot)
         if not itemID or itemID <= 0 or itemID ~= math.floor(itemID) then return end
         itemID = math.floor(itemID)
 
-        local info = Internal.SafeResults("GetContainerItemInfo", bag, slot)
-        local stack = info and positiveInt(info[2]) or nil
+        local info = Internal.CallResults(ccontainer.GetContainerItemInfo, bag, slot)
+        local info = info and info[1] or nil
+        local stack = 0
+        if type(info) == "table" then stack = tonumber(info.stackCount or info[2]) or 0 end
+        stack = positiveInt(stack)
         if not stack then return end
 
         local key = "item:" .. itemID

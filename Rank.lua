@@ -127,7 +127,7 @@ end
 
 -- SB-39: scarcity estimate for one missing unit when no reliable price exists.
 -- Runtime item metadata is preferred; the small static table fills gaps when
--- GetItemInfo has no cached data. Never errors on bad items or missing APIs.
+-- C_Item.GetItemInfo has no cached data. Never errors on bad items or missing APIs.
 function Skilly.Rank.UnitPressure(reagent)
   local detail = {
     tier = 2, ease = 1, kind = "unknown", crossSkill = false, sourceSkill = nil,
@@ -149,9 +149,10 @@ function Skilly.Rank.UnitPressure(reagent)
   end
 
   local rarity, ilvl, itemType, subType = nil, nil, nil, nil
-  if type(_G.GetItemInfo) == "function" then
+  local citem = _G.C_Item
+  if type(citem) == "table" and type(citem.GetItemInfo) == "function" then
     local identifier = reagent.link or itemID or reagent.name
-    local ok, _, _, r, lvl, _, typ, sub = pcall(_G.GetItemInfo, identifier)
+    local ok, _, _, r, lvl, _, typ, sub = pcall(citem.GetItemInfo, identifier)
     if ok then
       rarity, ilvl, itemType, subType = tonumber(r), tonumber(lvl), typ, sub
     end
@@ -742,14 +743,11 @@ local function itemSellPrice(recipe)
   local itemID = Internal.NumericItemID(
       Internal.ReagentKey(recipe), recipe.link, recipe.itemID)
   if not itemID or itemID <= 0 then return nil end
-  local getter = _G.GetItemInfo
-  if type(getter) ~= "function" then return nil end
-
-  local results = nil
-  local ok = pcall(function() results = { getter(itemID) } end)
-  if not ok or type(results) ~= "table" then return nil end
-  local sell = tonumber(results[11])
-  if not sell or sell <= 0 then return nil end
+  local citem = _G.C_Item
+  if type(citem) ~= "table" or type(citem.GetItemInfo) ~= "function" then return nil end
+  local ok, _, _, _, _, _, _, _, _, _, sell = pcall(citem.GetItemInfo, itemID)
+  sell = tonumber(sell)
+  if not ok or not sell or sell <= 0 then return nil end
   return math.floor(sell)
 end
 
@@ -832,15 +830,7 @@ local function resolveMissingName(row)
         pcall(citem.RequestLoadItemDataByID, itemID)
       end
     end
-    if (not name or string.match(name, "^Item %d+$") or string.match(name, "^item:%d+$"))
-        and type(_G.GetItemInfo) == "function" then
-      local ok, infoName, link = pcall(_G.GetItemInfo, itemID)
-      if ok and type(infoName) == "string" and infoName ~= "" then name = infoName end
-      if (not name or name == "" or string.match(name, "^Item %d+$")) and type(link) == "string" then
-        local linkName = string.match(link, "%[(.+)%]")
-        if type(linkName) == "string" and linkName ~= "" then name = linkName end
-      end
-    end
+
   end
   if not name or name == "" then
     if itemID then name = "item:" .. itemID else name = "material" end

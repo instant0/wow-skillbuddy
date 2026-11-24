@@ -762,15 +762,7 @@ local function printDebugEntry(entry, label, snapshot, mode, index)
             pcall(citem.RequestLoadItemDataByID, itemID)
           end
         end
-        if (name == "material" or string.match(name, "^Item %d+$") or string.match(name, "^item:%d+$"))
-            and type(_G.GetItemInfo) == "function" then
-          local okN, n2, link = pcall(_G.GetItemInfo, itemID)
-          if okN and type(n2) == "string" and n2 ~= "" then name = n2
-          elseif okN and type(link) == "string" then
-            local ln = string.match(link, "%[(.+)%]")
-            if type(ln) == "string" and ln ~= "" then name = ln end
-          end
-        end
+
       end
       if (name == "material" or string.match(name, "^Item %d+$")) and itemID then name = "item:" .. itemID end
       local sourceText = showSource

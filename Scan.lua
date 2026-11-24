@@ -111,12 +111,6 @@ local function resolveItemNameByID(id)
     end
   end
 
-  local results = Internal.CallResults(_G.GetItemInfo, n)
-  if results then
-    local name = type(results[1]) == "string" and results[1] ~= "" and results[1] or nil
-    local link = type(results[2]) == "string" and results[2] ~= "" and results[2] or nil
-    if name then return name, link end
-  end
   return nil, nil
 end
 
