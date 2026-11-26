@@ -181,7 +181,9 @@ function Skilly.UI.PrintResults(entries, fullEntries, opts)
   end
   pcall(maybeHighlightRecommended, entries)
   local chatEnabled = chatRecommendationsEnabled()
-  if not chatEnabled and windowShown then
+  -- SB-103: suppress chat only for implicit triggers. Explicit /skilly, next,
+  -- best, and cheap always print chat regardless of the setting or window state.
+  if not explicit and not chatEnabled and windowShown then
     lastRecommendationSignature = sig
     return
   end
@@ -706,10 +708,16 @@ function Skilly.UI.ShowResults(entries)
     end
   end
 
-  callMethod(resultsFrame, "SetHeight", math.max(120, y + 16))
-  callMethod(resultsFrame, "Show")
+  local okHeight = callMethod(resultsFrame, "SetHeight", math.max(120, y + 16))
+  local okShow = callMethod(resultsFrame, "Show")
   resultsAnchorEnabledAtShow = companionAnchorEnabled()
   pcall(applyResultsLayout)
+
+  -- SB-103: success is proven visibility, not a best-effort Show(). Missing
+  -- methods, failed pcalls, or an unshown frame leave chat as the fallback.
+  if not okHeight or not okShow then return false end
+  local okShown, shown = pcall(function() return resultsFrame:IsShown() end)
+  if not okShown or shown ~= true then return false end
   return true
 end
 

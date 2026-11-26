@@ -105,32 +105,48 @@ local function externalCountAllowed()
   return featureEnabled("useAltInventory", false)
 end
 
-local function externalCountInfo(key, link, itemID)
+-- SB-97: one external count decision per reagent. Candidates from different
+-- adapters can describe the same stock, so at most one combined and at most one
+-- alts-only candidate is selected (the first valid one in registry order).
+-- A fresh bank snapshot suppresses every combined candidate: an unsplittable
+-- combined total can include the bank stock already counted.
+local function selectedExternalCount(key, link, itemID, hasFreshBank)
+  local result = { alts = 0, combined = 0, altsSource = nil, combinedSource = nil }
+
   local candidates = type(Skilly.SourceCandidates) == "function"
       and Skilly.SourceCandidates("count", key, link, itemID) or {}
-  local info = { alts = 0, combined = 0, altsSources = {}, combinedSources = {} }
+  local firstAlts, firstAltsSource, firstCombined, firstCombinedSource =
+      nil, nil, nil, nil
 
   for _, c in ipairs(candidates) do
     local n = positiveCount(c and c.value)
     if n > 0 then
       local sourceName = tostring(c.name or "external")
-      if c.combined == true or c.category ~= "alts" then
-        info.combined = info.combined + n
-        info.combinedSources[#info.combinedSources + 1] = sourceName
-      else
-        info.alts = info.alts + n
-        info.altsSources[#info.altsSources + 1] = sourceName
+      local isCombined = (c.combined == true) or (c.category ~= "alts")
+      if isCombined then
+        if firstCombined == nil then
+          firstCombined, firstCombinedSource = n, sourceName
+        end
+      elseif firstAlts == nil then
+        firstAlts, firstAltsSource = n, sourceName
       end
     end
   end
 
-  -- Combined sources can overlap the alts component. Use one basis only so a
-  -- unit is never counted twice in a "complete crafts" claim.
-  if info.combined > 0 then
-    info.alts = 0
-    info.altsSources = {}
+  if hasFreshBank then
+    -- A specifically identified alts-only candidate may still be counted with
+    -- the bank (at most one); combined candidates are suppressed.
+    result.alts = firstAlts or 0
+    result.altsSource = firstAltsSource
+  elseif firstCombined ~= nil then
+    result.combined = firstCombined
+    result.combinedSource = firstCombinedSource
+  else
+    result.alts = firstAlts or 0
+    result.altsSource = firstAltsSource
   end
-  return info
+
+  return result
 end
 
 function Skilly.Cost.ItemCountInfo(reagent)
@@ -169,12 +185,12 @@ function Skilly.Cost.ItemCountInfo(reagent)
   end
 
   if allowExternal then
-    local ext = externalCountInfo(key, link, itemID)
+    local ext = selectedExternalCount(key, link, itemID, hasFreshBank)
     info.alts = ext.alts
     info.combined = ext.combined
-    info.altsSources = ext.altsSources
-    info.combinedSources = ext.combinedSources
-    info.externalSources = ext.combined > 0 and ext.combinedSources or ext.altsSources
+    if ext.altsSource then info.altsSources = { ext.altsSource } end
+    if ext.combinedSource then info.combinedSources = { ext.combinedSource } end
+    info.externalSources = ext.combined > 0 and info.combinedSources or info.altsSources
   end
 
   info.external = info.alts + info.combined

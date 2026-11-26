@@ -50,6 +50,18 @@ function Skilly.RegisterSource(name, source)
   return true
 end
 
+-- SB-100: a price adapter is gated by its live feature flag at the point where
+-- its method would be called, so a toggle takes effect without a reload
+-- (InitSources does not re-run on a toggle). Count lookups (TSM alt/combined,
+-- Carbonite) are not price adapters; useAltInventory owns whether those counts
+-- are consumed.
+local function priceAdapterAllowed(name)
+  if name == "auctionator" then return featureEnabled("useAuctionator", true) end
+  if name == "tsm" then return featureEnabled("useTSM", true) end
+  if name == "auctioneer" then return featureEnabled("useAuctioneer", true) end
+  return true
+end
+
 -- SB-38: return every positive value from registered sources with its registry
 -- name. The cached array is read-only; callers must not mutate it.
 function Skilly.SourceCandidates(kind, itemKey, link, itemID)
@@ -64,10 +76,12 @@ function Skilly.SourceCandidates(kind, itemKey, link, itemID)
 
   local results = {}
   local allowVendorPrice = featureEnabled("useVendorPrices", true)
+  local isPriceKind = kind == "price" or kind == "vendorPrice"
   for _, entry in ipairs(Skilly.Sources) do
     local method = entry.source and entry.source[kind]
     if type(method) == "function"
-        and (kind ~= "vendorPrice" or allowVendorPrice) then
+        and (kind ~= "vendorPrice" or allowVendorPrice)
+        and (not isPriceKind or priceAdapterAllowed(entry.name)) then
       local ok, result = pcall(method, itemKey, link, itemID)
       if ok then
         if type(result) == "table" then

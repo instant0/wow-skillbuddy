@@ -4,7 +4,7 @@
 ------------------------------------------------------------------------------------]]
 
 Skilly = Skilly or {}
-Skilly.version = "0.4.6"
+Skilly.version = "0.4.9"
 
 BINDING_HEADER_SKILLY = "Skilly"
 BINDING_NAME_SKILLY_NEXT_CRAFT = "Next craft"
