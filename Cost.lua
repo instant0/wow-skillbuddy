@@ -45,15 +45,16 @@ function Skilly.Cost.IsAsIfOwned(reagentOrKey)
   return db[key] == true
 end
 
-local function countFromClient(key, link, itemID, name, includeBank)
+local function countFromClient(key, link, itemID, name)
   local candidates = {}
   if itemID then candidates[#candidates + 1] = itemID end
   if type(link) == "string" and link ~= "" then candidates[#candidates + 1] = link end
   if type(name) == "string" and name ~= "" then candidates[#candidates + 1] = name end
 
-  local wantBank = includeBank == true
+  -- SB-88: only bag counts come from the client. Bank is never inferred from
+  -- GetItemCount(..., true); a stale or malformed cache stays unavailable.
   for _, identifier in ipairs(candidates) do
-    local results = Internal.SafeResults("GetItemCount", identifier, wantBank)
+    local results = Internal.SafeResults("GetItemCount", identifier, false)
     local value = results and tonumber(results[1]) or nil
     if value and value > 0 then return math.floor(value) end
   end
@@ -100,8 +101,40 @@ local function positiveCount(value)
   return math.floor(n)
 end
 
-function Skilly.Cost.ItemCount(reagent)
-  if type(reagent) ~= "table" then return 0 end
+local function externalCountAllowed()
+  return featureEnabled("useAltInventory", false)
+end
+
+local function externalCountInfo(key, link, itemID)
+  local candidates = type(Skilly.SourceCandidates) == "function"
+      and Skilly.SourceCandidates("count", key, link, itemID) or {}
+  local info = { alts = 0, combined = 0, altsSources = {}, combinedSources = {} }
+
+  for _, c in ipairs(candidates) do
+    local n = positiveCount(c and c.value)
+    if n > 0 then
+      local sourceName = tostring(c.name or "external")
+      if c.combined == true or c.category ~= "alts" then
+        info.combined = info.combined + n
+        info.combinedSources[#info.combinedSources + 1] = sourceName
+      else
+        info.alts = info.alts + n
+        info.altsSources[#info.altsSources + 1] = sourceName
+      end
+    end
+  end
+
+  -- Combined sources can overlap the alts component. Use one basis only so a
+  -- unit is never counted twice in a "complete crafts" claim.
+  if info.combined > 0 then
+    info.alts = 0
+    info.altsSources = {}
+  end
+  return info
+end
+
+function Skilly.Cost.ItemCountInfo(reagent)
+  if type(reagent) ~= "table" then return { count = 0 } end
 
   local key = reagent.key
   if type(key) ~= "string" or key == "" then
@@ -111,45 +144,69 @@ function Skilly.Cost.ItemCount(reagent)
   local name = type(reagent.name) == "string" and string.lower(reagent.name) or nil
   local itemID = Internal.NumericItemID(key, link, reagent.itemID)
   if key == "" and itemID then key = "item:" .. itemID end
-  if key == "" then return 0 end
-
-  local cached = itemCountCache[key]
-  if cached ~= nil then return cached end
+  if key == "" then return { count = 0 } end
 
   local includeBank = SkillyDB and SkillyDB.includeBank == true
   local bank = Skilly.Bank
   local bankInfo = includeBank and type(bank) == "table"
       and type(bank.Info) == "function" and bank.Info() or nil
   local hasFreshBank = type(bankInfo) == "table" and bankInfo.fresh == true
+  local allowExternal = externalCountAllowed()
 
-  local count = nil
-  if hasFreshBank then
-    -- Fresh cache: bags-only client count + cached player bank count. Skip
-    -- SourceValue("count", ...) so external bank/mail/guild sources cannot be
-    -- double-counted with the bank snapshot.
-    local bags = countFromClient(key, link, itemID, name, false)
-    if not bags or bags <= 0 then bags = countInBags(itemID, name) end
-    bags = positiveCount(bags)
+  local info = {
+    count = 0, bags = 0, bank = 0, external = 0, alts = 0, combined = 0,
+    altsSources = {}, combinedSources = {}, externalSources = {},
+    hasFreshBank = hasFreshBank, bankUnavailable = includeBank and not hasFreshBank,
+  }
 
-    local bankCount = 0
-    if type(bank.Count) == "function" then
-      local okBank, value = pcall(bank.Count, key)
-      if okBank then bankCount = positiveCount(value) end
-    end
-    count = bags + bankCount
-  else
-    -- No fresh cache: preserve exact legacy path and source precedence.
-    count = countFromClient(key, link, itemID, name, includeBank)
-    if not count then
-      count = Skilly.SourceValue("count", key, link, itemID)
-    end
-    if not count or count <= 0 then
-      count = countInBags(itemID, name)
-    end
-    count = positiveCount(count)
+  local bags = countFromClient(key, link, itemID, name)
+  if not bags or bags <= 0 then bags = countInBags(itemID, name) end
+  info.bags = positiveCount(bags)
+
+  if hasFreshBank and type(bank.Count) == "function" then
+    local okBank, value = pcall(bank.Count, key)
+    if okBank then info.bank = positiveCount(value) end
   end
 
-  itemCountCache[key] = count
+  if allowExternal then
+    local ext = externalCountInfo(key, link, itemID)
+    info.alts = ext.alts
+    info.combined = ext.combined
+    info.altsSources = ext.altsSources
+    info.combinedSources = ext.combinedSources
+    info.externalSources = ext.combined > 0 and ext.combinedSources or ext.altsSources
+  end
+
+  info.external = info.alts + info.combined
+  info.count = info.bags + info.bank + info.external
+  return info
+end
+
+function Skilly.Cost.ItemCount(reagent)
+  if type(reagent) ~= "table" then return 0 end
+  local key = reagent.key
+  if type(key) ~= "string" or key == "" then
+    key = Internal.ItemKey(reagent.link, reagent.name)
+  end
+  local itemID = Internal.NumericItemID(key, reagent.link, reagent.itemID)
+  if key == "" and itemID then key = "item:" .. itemID end
+  if key == "" then return 0 end
+
+  local includeBank = SkillyDB and SkillyDB.includeBank == true
+  local allowExternal = externalCountAllowed()
+  local bank = Skilly.Bank
+  local bankInfo = includeBank and type(bank) == "table"
+      and type(bank.Info) == "function" and bank.Info() or nil
+  local freshBank = type(bankInfo) == "table" and bankInfo.fresh == true
+  -- SB-88: a stale bank cache and a fresh one must never share a count.
+  local cacheKey = key .. ":" .. (freshBank and "B1" or "B0")
+      .. ":" .. (allowExternal and "X1" or "X0")
+  local cached = itemCountCache[cacheKey]
+  if cached ~= nil then return cached end
+
+  local info = Skilly.Cost.ItemCountInfo(reagent)
+  local count = positiveCount(info and info.count)
+  itemCountCache[cacheKey] = count
   return count
 end
 
@@ -174,7 +231,8 @@ local function gradeForPrice(source)
   return "unknown"
 end
 
--- Real bag/bank count, upgraded to "fully covered" for as-if entries.
+-- Real bag count, upgraded to "fully covered" for as-if entries. Bank is
+-- counted separately from the fresh cache in ItemCountInfo.
 local function ownedForAvailability(reagent, key, required)
   local owned = tonumber(Skilly.Cost.ItemCount(reagent)) or 0
   if owned < 0 then owned = 0 end
@@ -346,10 +404,211 @@ function Skilly.Cost.PriceInfo(reagent)
   return price, source, source ~= "default"
 end
 
--- SB-10: cost for one craft. Only missing units are charged in `total`;
--- `fullCost` prices every required unit for comparison.
+-- SB-81/SB-88: summarize where counted materials come from. Bank is counted
+-- only from a fresh cache; alts are opt-in; combined external sources keep
+-- their own label.
+function Skilly.Cost.OwnershipSummary(recipe)
+  local summary = {
+    bags = 0, bank = 0, alts = 0, combined = 0, external = 0,
+    asIf = 0, unknown = 0, craftable = 0,
+  }
+  if type(recipe) ~= "table" or type(recipe.reagents) ~= "table" then
+    summary.unknown = 1
+    return summary
+  end
+  local limit = nil
+  local includeBank = SkillyDB and SkillyDB.includeBank == true
+  local bank = Skilly.Bank
+  local bankInfo = includeBank and type(bank) == "table" and type(bank.Info) == "function" and bank.Info() or nil
+  local hasFreshBank = type(bankInfo) == "table" and bankInfo.fresh == true
+  for _, reagent in ipairs(recipe.reagents) do
+    if type(reagent) ~= "table" then
+      summary.unknown = summary.unknown + 1
+    else
+      local key = Internal.ReagentKey(reagent)
+      local required = math.floor(tonumber(reagent.count) or 0)
+      if key == "" or required <= 0 then
+        summary.unknown = summary.unknown + 1
+      else
+        local asIf = Skilly.Cost.IsAsIfOwned(key)
+        local info = Skilly.Cost.ItemCountInfo(reagent)
+        local bags = positiveCount(info.bags)
+        local bnk = positiveCount(info.bank)
+        local alts = positiveCount(info.alts)
+        local combined = positiveCount(info.combined)
+        local effectiveBags, effectiveBank, effectiveAlts = 0, 0, 0
+        local effectiveCombined, effectiveAsIf = 0, 0
+        local remaining = required
+        local takeBags = math.min(bags, remaining); effectiveBags = takeBags; remaining = remaining - takeBags
+        local takeBank = math.min(bnk, remaining); effectiveBank = takeBank; remaining = remaining - takeBank
+        if asIf and remaining > 0 then effectiveAsIf = remaining; remaining = 0 end
+        local takeAlts = math.min(alts, remaining); effectiveAlts = takeAlts; remaining = remaining - takeAlts
+        local takeCombined = math.min(combined, remaining); effectiveCombined = takeCombined
+        summary.bags = summary.bags + effectiveBags
+        summary.bank = summary.bank + effectiveBank
+        summary.alts = summary.alts + effectiveAlts
+        summary.combined = summary.combined + effectiveCombined
+        summary.external = summary.external + effectiveAlts + effectiveCombined
+        summary.asIf = summary.asIf + effectiveAsIf
+        local owned = effectiveBags + effectiveBank + effectiveAlts
+            + effectiveCombined + effectiveAsIf
+        local crafts = math.floor(owned / required)
+        if limit == nil or crafts < limit then limit = crafts end
+      end
+    end
+  end
+  summary.craftable = limit or 0
+  summary.includeBank = includeBank
+  summary.hasFreshBank = hasFreshBank
+  summary.bankUnavailable = includeBank and not hasFreshBank
+  return summary
+end
+
+function Skilly.Cost.OwnershipLabel(recipe)
+  local s = Skilly.Cost.OwnershipSummary(recipe)
+  local parts = {}
+  if (tonumber(s.bags) or 0) > 0 then parts[#parts+1] = "bags" end
+  if (tonumber(s.bank) or 0) > 0 then parts[#parts+1] = "fresh bank" end
+  if (tonumber(s.alts) or 0) > 0 then parts[#parts+1] = "alts" end
+  if (tonumber(s.combined) or 0) > 0 then parts[#parts+1] = "alt/external (combined)" end
+  if (tonumber(s.asIf) or 0) > 0 then parts[#parts+1] = "as-if" end
+  if #parts == 0 then return "your materials" end
+  local hasExternal = (tonumber(s.external) or 0) > 0
+  local hasOnlyBags = #parts == 1 and parts[1] == "bags"
+  if hasOnlyBags then return "your bags" end
+  if hasExternal then return table.concat(parts, "+") .. " materials" end
+  -- bags/fresh bank/as-if are the player's own counted materials.
+  return "your materials (" .. table.concat(parts, "+") .. ")"
+end
+
+-- SB-88: compact four-category availability summary for text output. All
+-- counts are complete crafts from that category alone, not owned-unit totals.
+local function availableMoney()
+  local results = Internal.SafeResults("GetMoney")
+  local value = results and tonumber(results[1]) or nil
+  if not value or value < 0 then return nil end
+  return math.floor(value)
+end
+
+local function purchaseSourceLabel(grades)
+  local hasAH, hasVendor = false, false
+  for _, grade in ipairs(grades) do
+    if grade == "market" then hasAH = true else hasVendor = true end
+  end
+  if hasAH and hasVendor then return "AH/vendor" end
+  if hasAH then return "AH" end
+  return "vendor"
+end
+
+function Skilly.Cost.ProvenanceSummary(recipe)
+  local summary = {
+    self = 0, bank = 0, alts = 0, combined = 0, ah = 0,
+    includeBank = false, bankFresh = false, altsAllowed = externalCountAllowed(),
+    purchaseAllowed = false, marketAllowed = false, hasCombined = false,
+    money = nil, moneyBounded = false, unknown = 0, text = "",
+  }
+  if type(recipe) ~= "table" or type(recipe.reagents) ~= "table" then
+    summary.unknown = 1
+    return summary
+  end
+
+  local includeBank = SkillyDB and SkillyDB.includeBank == true
+  local bank = Skilly.Bank
+  local bankInfo = includeBank and type(bank) == "table"
+      and type(bank.Info) == "function" and bank.Info() or nil
+  local hasFreshBank = type(bankInfo) == "table" and bankInfo.fresh == true
+  summary.includeBank = includeBank
+  summary.bankFresh = hasFreshBank
+  summary.purchaseAllowed = Skilly.Cost.AssumePurchasable()
+  summary.marketAllowed = featureEnabled("allowAHMaterials", true)
+  summary.money = availableMoney()
+
+  local selfLimit, bankLimit, altsLimit, combinedLimit = nil, nil, nil, nil
+  local buyLimit, buyGrades = nil, {}
+
+  for _, reagent in ipairs(recipe.reagents) do
+    if type(reagent) ~= "table" then
+      summary.unknown = summary.unknown + 1
+    else
+      local key = Internal.ReagentKey(reagent)
+      local required = math.floor(tonumber(reagent.count) or 0)
+      if key == "" or required <= 0 then
+        summary.unknown = summary.unknown + 1
+      else
+        local info = Skilly.Cost.ItemCountInfo(reagent)
+        local selfCount = positiveCount(info.bags)
+        local bankCount = hasFreshBank and positiveCount(info.bank) or 0
+        local altCount = summary.altsAllowed and positiveCount(info.alts) or 0
+        local combinedCount = summary.altsAllowed and positiveCount(info.combined) or 0
+        if combinedCount > 0 then summary.hasCombined = true end
+        local need = required - selfCount - bankCount - altCount - combinedCount
+        if need < 0 then need = 0 end
+
+        local selfCrafts = math.floor(selfCount / required)
+        if selfLimit == nil or selfCrafts < selfLimit then selfLimit = selfCrafts end
+        if hasFreshBank then
+          local bankCrafts = math.floor(bankCount / required)
+          if bankLimit == nil or bankCrafts < bankLimit then bankLimit = bankCrafts end
+        end
+        if summary.altsAllowed then
+          local altCrafts = math.floor(altCount / required)
+          if altsLimit == nil or altCrafts < altsLimit then altsLimit = altCrafts end
+          local combinedCrafts = math.floor(combinedCount / required)
+          if combinedLimit == nil or combinedCrafts < combinedLimit then
+            combinedLimit = combinedCrafts
+          end
+        end
+
+        if summary.purchaseAllowed and need > 0 then
+          local price, source = Skilly.Cost.PriceFor(reagent)
+          price = tonumber(price)
+          local grade = gradeForPrice(source)
+          local canBuy = price and price > 0 and hasReliablePrice(source)
+              and (grade ~= "market" or summary.marketAllowed)
+          if canBuy then
+            buyGrades[#buyGrades + 1] = grade
+            if summary.money then
+              local affordable = math.floor(summary.money / price)
+              if affordable > need then affordable = need end
+              local crafts = math.floor(affordable / need)
+              if buyLimit == nil or crafts < buyLimit then buyLimit = crafts end
+            end
+          end
+        end
+      end
+    end
+  end
+
+  summary.self = selfLimit or 0
+  summary.bank = bankLimit or 0
+  summary.alts = altsLimit or 0
+  summary.combined = combinedLimit or 0
+  summary.ah = buyLimit or 0
+  summary.moneyBounded = summary.money ~= nil and buyLimit ~= nil
+
+  local parts = { tostring(summary.self) .. " self" }
+  if hasFreshBank then parts[#parts + 1] = tostring(summary.bank) .. " bank" end
+  if summary.hasCombined then
+    parts[#parts + 1] = tostring(summary.combined) .. " external (combined)"
+  elseif summary.altsAllowed then
+    parts[#parts + 1] = tostring(summary.alts) .. " alts"
+  end
+  if summary.purchaseAllowed and summary.money then
+    local suffix = summary.unknown > 0
+        and " (money-bounded, partial)" or " (money-bounded)"
+    parts[#parts + 1] = tostring(summary.ah) .. " "
+        .. purchaseSourceLabel(buyGrades) .. suffix
+  end
+  summary.text = table.concat(parts, ", ")
+  return summary
+end
+
+-- SB-88: only a reliable missing-unit price enters the literal out-of-pocket
+-- total. The 1-copper fallback stays visible as an estimate.
 function Skilly.Cost.Recipe(recipe)
-  local result = { total = 0, fullCost = 0, detail = {} }
+  local result = {
+    total = 0, fullCost = 0, estimatedCost = 0, estimated = 0, detail = {},
+  }
   if type(recipe) ~= "table" or type(recipe.reagents) ~= "table" then
     return result
   end
@@ -368,10 +627,16 @@ function Skilly.Cost.Recipe(recipe)
       local price, source = Skilly.Cost.PriceFor(reagent)
       price = tonumber(price) or 1
       if price < 0 then price = 0 end
+      local reliable = hasReliablePrice(source)
 
       local subtotal = need * price
-      result.total = result.total + subtotal
-      result.fullCost = result.fullCost + required * price
+      if reliable then
+        result.total = result.total + subtotal
+        result.fullCost = result.fullCost + required * price
+      elseif need > 0 then
+        result.estimatedCost = result.estimatedCost + subtotal
+        result.estimated = result.estimated + 1
+      end
       result.detail[#result.detail + 1] = {
         name = reagent.name,
         key = Internal.ReagentKey(reagent),
@@ -381,6 +646,8 @@ function Skilly.Cost.Recipe(recipe)
         price = price,
         subtotal = subtotal,
         source = source,
+        hasPrice = reliable,
+        estimated = need > 0 and not reliable or false,
       }
     end
   end

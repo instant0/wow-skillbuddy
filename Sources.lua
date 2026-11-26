@@ -70,9 +70,25 @@ function Skilly.SourceCandidates(kind, itemKey, link, itemID)
         and (kind ~= "vendorPrice" or allowVendorPrice) then
       local ok, result = pcall(method, itemKey, link, itemID)
       if ok then
-        local value = tonumber(result)
-        if value and value > 0 then
-          results[#results + 1] = { name = entry.name, value = value }
+        if type(result) == "table" then
+          for _, row in ipairs(result) do
+            if type(row) == "table" then
+              local value = tonumber(row.value or row[1])
+              if value and value > 0 then
+                results[#results + 1] = {
+                  name = entry.name,
+                  value = value,
+                  category = type(row.category) == "string" and row.category or nil,
+                  combined = row.combined == true,
+                }
+              end
+            end
+          end
+        else
+          local value = tonumber(result)
+          if value and value > 0 then
+            results[#results + 1] = { name = entry.name, value = value }
+          end
         end
       end
     end
@@ -180,29 +196,34 @@ local function registerTSMSource()
       local itemString = tsmItemString(itemKey, link, itemID)
       if not itemString then return nil end
 
-      -- Skilly reads the player's own bags in SB-07; sources answer for
-      -- stock outside them (bank, mail, alts, guild bank).
-      local total = nil
+      -- SB-88: Skilly counts the player's own bags separately. Only the alts
+      -- component can be claimed as alts; the player component would overlap
+      -- bags, and bank/mail/guild cannot be split from the alts figure.
       if type(api.GetPlayerTotals) == "function" then
-        local ok, player, alts = pcall(api.GetPlayerTotals, itemString)
-        if ok then total = (tonumber(player) or 0) + (tonumber(alts) or 0) end
-      end
-
-      if total == nil then
-        total = 0
-        if type(api.GetBankQuantity) == "function" then
-          total = total + (Internal.CallNumber(api.GetBankQuantity, itemString) or 0)
-        end
-        if type(api.GetMailQuantity) == "function" then
-          total = total + (Internal.CallNumber(api.GetMailQuantity, itemString) or 0)
+        local ok, _, alts = pcall(api.GetPlayerTotals, itemString)
+        if ok then
+          local altCount = tonumber(alts)
+          if altCount and altCount > 0 then
+            return { { value = math.floor(altCount), category = "alts" } }
+          end
+          return nil
         end
       end
 
+      local total = 0
+      if type(api.GetBankQuantity) == "function" then
+        total = total + (Internal.CallNumber(api.GetBankQuantity, itemString) or 0)
+      end
+      if type(api.GetMailQuantity) == "function" then
+        total = total + (Internal.CallNumber(api.GetMailQuantity, itemString) or 0)
+      end
       if type(api.GetGuildQuantity) == "function" then
         total = total + (Internal.CallNumber(api.GetGuildQuantity, itemString) or 0)
       end
 
-      if total and total > 0 then return math.floor(total) end
+      if total > 0 then
+        return { { value = math.floor(total), combined = true } }
+      end
       return nil
     end,
   })
@@ -283,7 +304,9 @@ local function registerCarboniteSource()
       local id = Internal.NumericItemID(itemKey, link, itemID)
       if not id then return nil end
       local value = Internal.CallNumber(warehouse.CountItem, warehouse, id)
-      if value and value > 0 then return math.floor(value) end
+      if value and value > 0 then
+        return { { value = math.floor(value), combined = true } }
+      end
       return nil
     end,
   })

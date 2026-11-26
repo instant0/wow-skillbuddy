@@ -4,7 +4,7 @@
 ------------------------------------------------------------------------------------]]
 
 Skilly = Skilly or {}
-Skilly.version = "0.3.1"
+Skilly.version = "0.4.6"
 
 BINDING_HEADER_SKILLY = "Skilly"
 BINDING_NAME_SKILLY_NEXT_CRAFT = "Next craft"
@@ -15,7 +15,7 @@ function Skilly_OnCompartmentClick(...)
 
   local recommend = Skilly.Recommend
   if type(recommend) == "function" then
-    local ok, err = pcall(recommend)
+    local ok, err = pcall(recommend, nil, { explicit = true })
     if not ok and type(Skilly.Print) == "function" then
       pcall(Skilly.Print, "Recommendation failed: " .. tostring(err))
     end
@@ -87,6 +87,7 @@ function Skilly.InitSettings()
     local prices = addGroup("Prices")
     local ranking = addGroup("Ranking")
     local output = addGroup("Output")
+    local window = addGroup("Window / Profession UI")
 
     addCheckbox(
       "Best skillup mode", "SKILLY_BEST_MODE", false,
@@ -100,15 +101,15 @@ function Skilly.InitSettings()
       "Include bank", "SKILLY_INCLUDE_BANK", false,
       function() return dbGet("includeBank") == true end,
       function(value) dbSet("includeBank", value == true) end,
-      "Count reagents in the bank as well as in bags.",
+      "Count reagents in the bank as well as in bags. Requires a fresh bank cache captured while the bank was open.",
       general
     )
 
     addCheckbox(
-      "Show minimap button", "SKILLY_MINIMAP_VISIBLE", true,
+      "Show minimap button", "SKILLY_MINIMAP_VISIBLE", false,
       function()
         local m = dbGet("minimap")
-        return type(m) ~= "table" or m.visible ~= false
+        return type(m) == "table" and m.visible == true
       end,
       function(value)
         local m = dbGet("minimap")
@@ -119,7 +120,7 @@ function Skilly.InitSettings()
           pcall(Skilly.UI.UpdateMinimapButton)
         end
       end,
-      "Show the launcher button near the minimap.",
+      "Show the draggable launcher button near the minimap.",
       general
     )
 
@@ -161,22 +162,29 @@ function Skilly.InitSettings()
         return tostring(n)
       end)
     end
-    local okSlider = pcall(api.CreateSlider, category, countSetting, sliderOpts, "Maximum number of recipes shown (1-10).")
+    local okSlider = pcall(api.CreateSlider, output, countSetting, sliderOpts, "Maximum number of recipes shown (1-10).")
     if not okSlider then
-      pcall(api.CreateSlider, output, countSetting, sliderOpts, "Maximum number of recipes shown (1-10).")
+      pcall(api.CreateSlider, category, countSetting, sliderOpts, "Maximum number of recipes shown (1-10).")
     end
 
-    local groupByCategory = { Prices = prices, Ranking = ranking, Output = output }
+    local groupByCategory = { Prices = prices, Ranking = ranking, Output = output, Window = window }
     local features = type(Skilly.Features) == "table" and Skilly.Features or {}
-    for _, categoryName in ipairs({ "Prices", "Ranking", "Output" }) do
+    for _, categoryName in ipairs({ "Prices", "Ranking", "Output", "Window" }) do
       local group = groupByCategory[categoryName] or category
       for _, row in ipairs(features) do
         local f = row
         if type(f) == "table" and f.category == categoryName
             and type(f.key) == "string" and f.key ~= "" then
           local defaultValue = f.default == true
+          local label = tostring(f.label or f.key)
+          local tooltip = type(f.tooltip) == "string" and f.tooltip or ""
+          if f.status == "partial" then
+            tooltip = "STATUS: Partial implementation. " .. tooltip
+          elseif f.status == "unavailable" then
+            tooltip = "STATUS: Wanted but not implemented yet. " .. tooltip
+          end
           addCheckbox(
-            tostring(f.label or f.key),
+            label,
             "SKILLY_FEATURE_" .. string.upper(f.key),
             defaultValue,
             function() return featureEnabled(f.key, defaultValue) end,
@@ -188,7 +196,7 @@ function Skilly.InitSettings()
                 pcall(Skilly.ResetSourceCache)
               end
             end,
-            type(f.tooltip) == "string" and f.tooltip or nil,
+            tooltip,
             group
           )
         end
@@ -202,10 +210,326 @@ function Skilly.InitSettings()
   end
 end
 
+-- SB-85: one settings opener. The fallback reads the existing feature registry
+-- instead of duplicating it, so modern and fallback surfaces expose the same
+-- options and write the same SavedVariables.
+local function safeFrameCall(obj, method, ...)
+  if obj == nil then return false end
+  local fn = obj[method]
+  if type(fn) ~= "function" then return false end
+  local ok = pcall(fn, obj, ...)
+  return ok
+end
+
+local function safeCreateFrame(frameType, name, parent, template)
+  if type(_G.CreateFrame) ~= "function" then return nil end
+  local ok, frame = pcall(_G.CreateFrame, frameType, name, parent, template)
+  if ok then return frame end
+  return nil
+end
+
+local function safeCreateFontString(parent, name, layer, template)
+  if parent == nil or type(parent.CreateFontString) ~= "function" then return nil end
+  local ok, text = pcall(parent.CreateFontString, parent, name, layer, template)
+  if ok then return text end
+  return nil
+end
+
+local function attachSettingsTooltip(frame, text)
+  if frame == nil or type(text) ~= "string" or text == "" then return end
+  safeFrameCall(frame, "SetScript", "OnEnter", function(self)
+    local tt = _G.GameTooltip
+    if not tt or type(tt.SetOwner) ~= "function" then return end
+    pcall(tt.SetOwner, tt, self, "ANCHOR_RIGHT")
+    pcall(tt.SetText, tt, text)
+    pcall(tt.Show, tt)
+  end)
+  safeFrameCall(frame, "SetScript", "OnLeave", function()
+    local tt = _G.GameTooltip
+    if tt and type(tt.Hide) == "function" then pcall(tt.Hide, tt) end
+  end)
+end
+
+local function fallbackSettingRows()
+  local rows = {}
+  local function add(name, default, getter, setter, tooltip)
+    rows[#rows + 1] = { name = name, default = default, get = getter, set = setter, tooltip = tooltip }
+  end
+
+  add("Best skillup mode", false,
+    function() return dbGet("mode") == "best" end,
+    function(value) dbSet("mode", value == true and "best" or "cheap") end,
+    "On: best skillup. Off: cheapest available skillup.")
+
+  add("Include bank", false,
+    function() return dbGet("includeBank") == true end,
+    function(value) dbSet("includeBank", value == true) end,
+    "Count reagents in the bank. Requires a fresh bank cache.")
+
+  add("Show minimap button", false,
+    function()
+      local m = dbGet("minimap")
+      return type(m) == "table" and m.visible == true
+    end,
+    function(value)
+      local m = dbGet("minimap")
+      if type(m) ~= "table" then m = {} end
+      m.visible = (value == true)
+      dbSet("minimap", m)
+      if type(Skilly.UI) == "table" and type(Skilly.UI.UpdateMinimapButton) == "function" then
+        pcall(Skilly.UI.UpdateMinimapButton)
+      end
+    end,
+    "Show the draggable launcher button near the minimap.")
+
+  add("Assume purchasable materials", true,
+    function()
+      if type(Skilly.Cost.AssumePurchasable) == "function" then
+        return Skilly.Cost.AssumePurchasable() == true
+      end
+      return dbGet("assumePurchasable") ~= false
+    end,
+    function(value)
+      dbSet("assumePurchasable", value == true)
+      if type(Skilly.ResetSourceCache) == "function" then pcall(Skilly.ResetSourceCache) end
+    end,
+    "Allow missing mats when a real AH or vendor price is known.")
+
+  local features = type(Skilly.Features) == "table" and Skilly.Features or {}
+  for _, row in ipairs(features) do
+    if type(row) == "table" and type(row.key) == "string" and row.key ~= "" then
+      local defaultValue = row.default == true
+      local label = tostring(row.label or row.key)
+      local tooltip = type(row.tooltip) == "string" and row.tooltip or ""
+      if row.status == "partial" then
+        tooltip = "STATUS: Partial implementation. " .. tooltip
+      elseif row.status == "unavailable" then
+        tooltip = "STATUS: Wanted but not implemented yet. " .. tooltip
+      end
+      add(label, defaultValue,
+        function() return featureEnabled(row.key, defaultValue) end,
+        function(value)
+          if type(SkillyDB) ~= "table" then SkillyDB = {} end
+          if type(SkillyDB.features) ~= "table" then SkillyDB.features = {} end
+          SkillyDB.features[row.key] = (value == true)
+          if type(Skilly.ResetSourceCache) == "function" then pcall(Skilly.ResetSourceCache) end
+        end,
+        tooltip)
+    end
+  end
+  return rows
+end
+
+local fallbackSettingsPanel = nil
+
+local function buildFallbackSettingsPanel()
+  if fallbackSettingsPanel then return fallbackSettingsPanel end
+
+  local parent = _G.UIParent or _G.WorldFrame
+  local panel = safeCreateFrame("Frame", "SkillySettingsFallback", parent)
+  if not panel then return nil end
+  fallbackSettingsPanel = panel
+
+  safeFrameCall(panel, "SetWidth", 460)
+  safeFrameCall(panel, "SetHeight", 640)
+  safeFrameCall(panel, "SetPoint", "CENTER", 0, 0)
+  safeFrameCall(panel, "SetFrameStrata", "DIALOG")
+  safeFrameCall(panel, "SetMovable", true)
+  safeFrameCall(panel, "EnableMouse", true)
+  safeFrameCall(panel, "RegisterForDrag", "LeftButton")
+  safeFrameCall(panel, "SetScript", "OnDragStart", function(self)
+    if type(self.StartMoving) == "function" then pcall(self.StartMoving, self) end
+  end)
+  safeFrameCall(panel, "SetScript", "OnDragStop", function(self)
+    if type(self.StopMovingOrSizing) == "function" then pcall(self.StopMovingOrSizing, self) end
+  end)
+
+  local title = safeCreateFontString(panel, nil, "ARTWORK", "GameFontNormalLarge")
+  if title then
+    safeFrameCall(title, "SetPoint", "TOPLEFT", 16, -14)
+    safeFrameCall(title, "SetText", "Skilly settings")
+  end
+
+  local close = safeCreateFrame("Button", "SkillySettingsFallbackClose", panel, "UIPanelCloseButton")
+  if close then
+    safeFrameCall(close, "SetPoint", "TOPRIGHT", -6, -6)
+    safeFrameCall(close, "SetScript", "OnClick", function() safeFrameCall(panel, "Hide") end)
+  end
+
+  local rows = fallbackSettingRows()
+  local y = -44
+  for index, row in ipairs(rows) do
+    local checkbox = safeCreateFrame("CheckButton", "SkillyFallbackSetting" .. index, panel, "UICheckButtonTemplate")
+    if checkbox then
+      safeFrameCall(checkbox, "SetPoint", "TOPLEFT", 16, y)
+      local label = checkbox.Text or checkbox.text
+      if not label then
+        label = safeCreateFontString(checkbox, nil, "ARTWORK", "GameFontNormal")
+        if label then safeFrameCall(label, "SetPoint", "LEFT", checkbox, "RIGHT", 6, 0) end
+      end
+      if label then safeFrameCall(label, "SetText", row.name) end
+      local getter = row.get
+      local setter = row.set
+      safeFrameCall(checkbox, "SetChecked", getter() == true)
+      safeFrameCall(checkbox, "SetScript", "OnShow", function(self)
+        safeFrameCall(self, "SetChecked", getter() == true)
+      end)
+      safeFrameCall(checkbox, "SetScript", "OnClick", function(self)
+        local checked = false
+        if type(self.GetChecked) == "function" then
+          local ok, value = pcall(self.GetChecked, self)
+          if ok then checked = (value == true) end
+        end
+        setter(checked)
+        safeFrameCall(self, "SetChecked", getter() == true)
+      end)
+      attachSettingsTooltip(checkbox, row.tooltip)
+      y = y - 22
+    end
+  end
+
+  local countLabel = safeCreateFontString(panel, nil, "ARTWORK", "GameFontNormal")
+  if countLabel then safeFrameCall(countLabel, "SetPoint", "TOPLEFT", 46, y) end
+  local minus = safeCreateFrame("Button", "SkillyFallbackCountDown", panel, "UIPanelButtonTemplate")
+  local plus = safeCreateFrame("Button", "SkillyFallbackCountUp", panel, "UIPanelButtonTemplate")
+  if minus then
+    safeFrameCall(minus, "SetWidth", 24)
+    safeFrameCall(minus, "SetHeight", 20)
+    safeFrameCall(minus, "SetPoint", "TOPLEFT", 16, y)
+    safeFrameCall(minus, "SetText", "-")
+  end
+  if plus then
+    safeFrameCall(plus, "SetWidth", 24)
+    safeFrameCall(plus, "SetHeight", 20)
+    safeFrameCall(plus, "SetPoint", "TOPLEFT", 400, y)
+    safeFrameCall(plus, "SetText", "+")
+  end
+  local function refreshCount()
+    local n = math.floor(tonumber(dbGet("resultCount")) or 5)
+    if n < 1 then n = 1 elseif n > 10 then n = 10 end
+    if countLabel then safeFrameCall(countLabel, "SetText", "Results to show: " .. n) end
+    return n
+  end
+  if minus then
+    safeFrameCall(minus, "SetScript", "OnClick", function()
+      local n = refreshCount()
+      dbSet("resultCount", math.max(1, n - 1))
+      refreshCount()
+    end)
+  end
+  if plus then
+    safeFrameCall(plus, "SetScript", "OnClick", function()
+      local n = refreshCount()
+      dbSet("resultCount", math.min(10, n + 1))
+      refreshCount()
+    end)
+  end
+  safeFrameCall(panel, "SetScript", "OnShow", refreshCount)
+  attachSettingsTooltip(panel, "Results to show: maximum number of recipes printed per recommendation.")
+
+  return panel
+end
+
+function Skilly.OpenSettings()
+  if type(Skilly.InitSettings) == "function" then pcall(Skilly.InitSettings) end
+
+  local category = Skilly.settingsCategory
+  if category and Settings and type(Settings.OpenToCategory) == "function" then
+    local id = nil
+    if type(category.GetID) == "function" then
+      local ok, value = pcall(category.GetID, category)
+      if ok then id = value end
+    end
+    local ok = false
+    if id ~= nil then
+      ok = pcall(Settings.OpenToCategory, id)
+    else
+      ok = pcall(Settings.OpenToCategory, category)
+    end
+    if ok then return true end
+  end
+
+  local panel = buildFallbackSettingsPanel()
+  if panel then
+    safeFrameCall(panel, "Show")
+    local legacy = _G.InterfaceOptionsFrame_OpenToCategory
+    if type(legacy) == "function" then pcall(legacy, panel) end
+    return true
+  end
+
+  if type(Skilly.Print) == "function" then
+    Skilly.Print("Skilly settings could not be opened in this client.")
+  end
+  return false
+end
+
 -- SB-04/SB-45: one dispatcher for /skilly. Every entry point calls
 -- this function; a partial build names the missing piece instead of lying.
 local function missingPiece(name)
   Skilly.Print("Recommendation unavailable: missing " .. name .. ".")
+end
+
+-- SB-87: accept only snapshots with enough truthful data to rank. Bad rows are
+-- dropped; a snapshot with no usable rows is rejected instead of guessed.
+local function validReagent(reagent)
+  if type(reagent) ~= "table" then return false end
+  local internal = type(Skilly.Internal) == "table" and Skilly.Internal or nil
+  local key = internal and type(internal.ReagentKey) == "function"
+      and internal.ReagentKey(reagent) or reagent.key
+  if type(key) ~= "string" or key == "" then return false end
+  local count = tonumber(reagent.count)
+  if not count or count <= 0 or count ~= math.floor(count) then return false end
+  return true
+end
+
+local function validRecipe(recipe)
+  if type(recipe) ~= "table" then return false end
+  if type(recipe.name) ~= "string" or recipe.name == "" then return false end
+  if type(recipe.difficulty) ~= "string" or recipe.difficulty == "" then return false end
+  if type(recipe.learned) ~= "boolean" then return false end
+  if type(recipe.reagents) ~= "table" or #recipe.reagents == 0 then return false end
+  for _, reagent in ipairs(recipe.reagents) do
+    if not validReagent(reagent) then return false end
+  end
+  local madeMin = tonumber(recipe.madeMin)
+  local madeMax = tonumber(recipe.madeMax) or madeMin
+  if not madeMin or madeMin <= 0 or not madeMax or madeMax <= 0 then return false end
+  local cooldown = tonumber(recipe.cooldown)
+  if not cooldown or cooldown < 0 then return false end
+  return true
+end
+
+local function usableSnapshot(snapshot)
+  if type(snapshot) ~= "table" then
+    return nil, "Open a crafting profession window first."
+  end
+  if type(Skilly.Scan) == "table" and type(Skilly.Scan.UnsupportedView) == "function" then
+    local okUnsupported, unsupported = pcall(Skilly.Scan.UnsupportedView)
+    if okUnsupported and unsupported == true then
+      return nil, "Open your own crafting profession window first."
+    end
+  end
+  if type(snapshot.profession) ~= "string" or snapshot.profession == "" then
+    return nil, "Open a crafting profession window first."
+  end
+  if tonumber(snapshot.skill) == nil or tonumber(snapshot.maxSkill) == nil
+      or type(snapshot.recipes) ~= "table" then
+    return nil, "Profession data is incomplete; open and refresh the profession window."
+  end
+
+  local usable = {}
+  for _, recipe in ipairs(snapshot.recipes) do
+    if validRecipe(recipe) then usable[#usable + 1] = recipe end
+  end
+  if #usable == 0 then
+    return nil, "Profession data is incomplete; open and refresh the profession window."
+  end
+  if #usable == #snapshot.recipes then return snapshot end
+
+  local copy = {}
+  for key, value in pairs(snapshot) do copy[key] = value end
+  copy.recipes = usable
+  return copy
 end
 
 function Skilly.Recommend(mode, opts)
@@ -224,16 +548,25 @@ function Skilly.Recommend(mode, opts)
     missingPiece("Skilly.Rank.Best")
     return
   end
+  if type(Skilly.Scan) == "table" and type(Skilly.Scan.UnsupportedView) == "function" then
+    local okUnsupported, unsupported = pcall(Skilly.Scan.UnsupportedView)
+    if okUnsupported and unsupported == true then
+      Skilly.Print("Open your own crafting profession window first.")
+      return
+    end
+  end
 
-  local okScan, snapshot = pcall(scan)
+  local okScan, rawSnapshot = pcall(scan)
   if not okScan then
-    Skilly.Print("Could not read the profession window: " .. tostring(snapshot))
+    Skilly.Print("Could not read the profession window: " .. tostring(rawSnapshot))
     return
   end
-  if type(snapshot) ~= "table" then
-    Skilly.Print("Open a crafting profession window first.")
+  local snapshot, reason = usableSnapshot(rawSnapshot)
+  if not snapshot then
+    Skilly.Print(reason)
     return
   end
+  Skilly.lastSnapshot = snapshot
 
   local okRank, entries = pcall(Skilly.Rank.Best, snapshot, wanted)
   if not okRank then
@@ -266,9 +599,25 @@ function Skilly.Recommend(mode, opts)
     return
   end
   local top = entries[1]
-  local okDescribe, line = pcall(Skilly.Rank.Describe, top)
-  if okDescribe and type(line) == "string" and line ~= "" then
-    Skilly.Print("Best craft: with materials on hand - " .. line)
+  local resultCount = 5
+  if type(SkillyDB) == "table" then resultCount = tonumber(SkillyDB.resultCount) or 5 end
+  local maxLines = math.floor(resultCount)
+  if maxLines < 1 then maxLines = 1 elseif maxLines > 10 then maxLines = 10 end
+  local groupFor = type(Skilly.UI.GroupFor) == "function" and Skilly.UI.GroupFor or nil
+  local titles = type(Skilly.UI.GroupTitles) == "table" and Skilly.UI.GroupTitles or {}
+  local lastGroup = nil
+  Skilly.Print("Skilly recommendations:")
+  for i = 1, math.min(#entries, maxLines) do
+    local entry = entries[i]
+    local group = groupFor and groupFor(entry) or "other"
+    if group ~= lastGroup then
+      Skilly.Print(titles[group] or titles.other or "Other recommendations")
+      lastGroup = group
+    end
+    local okDescribe, line = pcall(Skilly.Rank.Describe, entry)
+    if okDescribe and type(line) == "string" and line ~= "" then
+      Skilly.Print(i .. ") " .. line)
+    end
   end
 
   local fullTop = type(fullEntries) == "table" and fullEntries[1] or nil
@@ -308,14 +657,21 @@ end, {
 })
 
 Skilly.RegisterCommand("config", function()
-  if Skilly.settingsCategory and Settings and Settings.OpenToCategory then
-    pcall(Settings.OpenToCategory, Skilly.settingsCategory:GetID())
-  else
-    Skilly.Print("Settings panel is not available.")
+  if type(Skilly.OpenSettings) ~= "function" then
+    Skilly.Print("Skilly settings could not be opened in this client.")
+    return
   end
+  Skilly.OpenSettings()
 end, {
   usage = "/skilly config",
   description = "Open the Skilly settings panel.",
+})
+
+Skilly.RegisterCommand("version", function()
+  Skilly.Print("Skilly " .. tostring(Skilly.version))
+end, {
+  usage = "/skilly version",
+  description = "Show the installed addon version.",
 })
 
 local function asIfDB()
@@ -699,10 +1055,15 @@ local function debugComparatorLine(entry, snapshot, mode, index)
       .. ", raw=" .. tostring(recipe.difficulty or "n/a")
       .. ", color=" .. tostring(color)
       .. ", p=" .. tostring(entry.p ~= nil and entry.p or "n/a")
-      .. ", threshold=" .. tostring(recipe.thresholdSource or "n/a")
+      .. ", thresholdSource=" .. tostring(recipe.thresholdSource or "n/a")
       .. ", expectedCrafts=" .. tostring(entry.expectedCrafts ~= nil and entry.expectedCrafts or "n/a")
+      .. ", expectedDenominator=" .. tostring(entry.expectedDenominator ~= nil and entry.expectedDenominator or "n/a")
       .. ", probSource=" .. tostring(entry.probabilitySource or "n/a")
+      .. ", observedRate=" .. tostring(entry.observedRate ~= nil and entry.observedRate or "color")
+      .. ", sourceGrade=" .. tostring(entry.sourceGrade or "n/a")
       .. ", costBasis=" .. tostring(entry.costBasis or "n/a")
+      .. ", estimatedCost=" .. tostring(entry.estimatedCost or 0)
+      .. ", estimatedReagents=" .. tostring(entry.estimatedReagents or 0)
       .. ", score=" .. tostring(entry.score ~= nil and entry.score or "n/a")
       .. ", potentialPoints=" .. tostring(entry.potentialPoints ~= nil and entry.potentialPoints or "n/a")
       .. ", craftable=" .. tostring(entry.craftable ~= nil and entry.craftable or "n/a")
@@ -1102,6 +1463,10 @@ if okCreate and frame then
     if type(Skilly.InitDB) == "function" then pcall(Skilly.InitDB) end
     if type(Skilly.InitSettings) == "function" then pcall(Skilly.InitSettings) end
     if type(Skilly.InitSources) == "function" then pcall(Skilly.InitSources) end
+
+    if type(Skilly.UI) == "table" and type(Skilly.UI.CheckProfessionAtLogin) == "function" then
+      pcall(Skilly.UI.CheckProfessionAtLogin)
+    end
 
     if type(Skilly.UI) == "table" and type(Skilly.UI.UpdateMinimapButton) == "function" then
       pcall(Skilly.UI.UpdateMinimapButton)

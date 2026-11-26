@@ -4,7 +4,6 @@
 ## Author: faslkjd56
 ## Category: Professions
 ## X-Category: Professions
-## Version: 0.3.1
 ## SavedVariables: SkillyDB
 ## SavedVariablesPerCharacter: SkillyCharDB
 ## AddonCompartmentFunc: Skilly_OnCompartmentClick

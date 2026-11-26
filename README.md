@@ -19,7 +19,7 @@ intermediate feature work.
 
 ## Current status
 
-Version **0.3.1**. Test build. The recommendation engine is real and wired to
+Test build. The shipped version is stated once in `README.txt`. The recommendation engine is real and wired to
 `/skilly`, `/skilly best|cheap`, `/skilly debug`, `/skilly export`, `/skilly bank`,
 and `/skilly trainer`. Bank cache (SB-59/SB-62), Professions companion anchor
 (SB-63, opt-in), auto-advice on profession open (SB-64, opt-in), and persisted
@@ -30,7 +30,7 @@ await review/archive consolidation. Chat remains authoritative.
 
 | File | Role |
 |---|---|
-| `Skilly.toc` | Load order, interface version, saved variables, version |
+| `Skilly.toc` | Load order, interface version, saved variables |
 | `Data.lua` | Bundled game data: thresholds, vendor prices, material pressure, difficulty bands |
 | `Core.lua` | Command registry, defaults/DB init, feature registry, internal helpers |
 | `Probe.lua` | Read-only diagnostics / probe report |
@@ -96,23 +96,49 @@ tiny committed tests are `tests/rank_test.lua` and `tests/load_test.lua`.
 
 ## Build
 
-Copy **only** these files into a folder named `Skilly`:
+Copy **only** these 16 files into a folder named `Skilly`:
 
 ```
-Skilly.toc  Data.lua  Core.lua  UI.lua  Skilly.lua  Bindings.xml  README.txt
+Skilly.toc   Bindings.xml   README.txt
+Data.lua     Core.lua       Probe.lua      Trainer.lua
+Scan.lua     Sources.lua    Bank.lua       Cost.lua
+Observe.lua  Rank.lua       Hints.lua      UI.lua
+Skilly.lua
 ```
+
+The 13 `.lua` files and `Bindings.xml` are the files named by `Skilly.toc`;
+`Skilly.toc` itself and `README.txt` complete the package. No other file is
+needed to load the addon.
 
 Exclude: `README.md`, `AGENTS.md`, `TASKS.md`, `tests/`, `tasks/`, `plans/`,
-`.agent/`, `.gitignore`, `.git/`.
+`.agent/`, `.gitignore`, `.git/`, and any future manifest or build note.
 
-The current build target is `/mnt/r/Skilly/`.
+The build target is `/mnt/r/Skilly/`.
 
-## Version history
+### Script-free package checklist
 
-- 0.1.0 — scaffolding.
-- 0.2.0 — thresholds, cheapest-price resolution, scarcity helpers, extended
-  vendor/pressure data, settings and commands; recommendations still pending.
-- 0.3.0 — two-mode ranker, explanation strings, chat output, real `/skilly help`,
-  `Recommend` wiring, `/skilly debug`, and the two committed tests.
-- 0.3.1 — `/skilly export` copyable feedback window, bounded output log, expanded
-  profession/trainer probe, and `evidence:` debug lines with spell ID/color.
+Run these from the project root after copying. Every check must pass before the
+package is named for acceptance; a failure means the package is stale.
+
+1. **Exact contents.** `find /mnt/r/Skilly/ -type f -printf '%f\n' | sort` must
+   list exactly the 16 names above. `find /mnt/r/Skilly/ -mindepth 1 -type d`
+   must print nothing, so no `tests/`, `tasks/`, `plans/`, `.agent/`, or `.git/`
+   subtree can ship.
+2. **No development files.** The same listing must not contain `README.md`,
+   `AGENTS.md`, or `TASKS.md`.
+3. **Two-source version agreement.** `grep -nE 'Skilly\.version[[:space:]]*=' Skilly.lua`
+   and `head -1 README.txt` must carry the same `0.4.x` value. A check over the
+   shipped package for `Skilly [0-9]+\.[0-9]+\.[0-9]+` must find exactly one
+   line, the first line of `README.txt`; `Skilly.toc` and this development
+   README carry no version literal.
+4. **Checksums.** Compare `sha256sum` of each source file with its copy in
+   `/mnt/r/Skilly/` for all 13 `.lua` files, `Bindings.xml`, `Skilly.toc`, and
+   `README.txt`. Every pair must agree.
+5. **Build label.** Record the first line of the shipped `README.txt` verbatim
+   as the named build label. `/skilly version` prints the shorter
+   `Skilly <version>` form of that same build.
+
+## Version information
+
+The shipped version is stated once at the top of `README.txt`. Do not duplicate
+it here. Shipped code edits bump that literal together with `Skilly.version`.

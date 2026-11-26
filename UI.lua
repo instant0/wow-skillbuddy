@@ -45,7 +45,7 @@ local function runRecommend()
   if type(Skilly.InitDB) == "function" then pcall(Skilly.InitDB) end
   local recommend = Skilly.Recommend
   if type(recommend) == "function" then
-    local ok, err = pcall(recommend)
+    local ok, err = pcall(recommend, nil, { explicit = true })
     if not ok and type(Skilly.Print) == "function" then
       pcall(Skilly.Print, "Recommendation failed: " .. tostring(err))
     end
@@ -106,6 +106,45 @@ local function recommendationSignature(entries, fullEntries, mode)
   return table.concat(parts, "|")
 end
 
+-- SB-90: one grouping rule for chat and the result window. Rank order is kept
+-- inside each group because entries arrive already sorted.
+local RESULT_GROUP_TITLES = {
+  now = "Make now (materials on hand)",
+  buy = "Buy from AH / missing materials",
+  other = "Other recommendations",
+}
+
+local function resultGroup(entry)
+  if type(entry) ~= "table" then return "other" end
+  local craftable = tonumber(entry.craftable) or 0
+  if craftable > 0 then return "now" end
+  local missing = type(entry.missing) == "table" and entry.missing or nil
+  if missing and #missing > 0 then return "buy" end
+  return "other"
+end
+
+Skilly.UI.GroupFor = resultGroup
+Skilly.UI.GroupTitles = RESULT_GROUP_TITLES
+
+local function printGroupedChatEntries(entries, maxLines)
+  local lastGroup = nil
+  local shown = 0
+  for i = 1, math.min(#entries, maxLines) do
+    local entry = entries[i]
+    local group = resultGroup(entry)
+    if group ~= lastGroup then
+      Skilly.Print(RESULT_GROUP_TITLES[group] or RESULT_GROUP_TITLES.other)
+      lastGroup = group
+    end
+    local ok, line = pcall(Skilly.Rank.Describe, entry)
+    if ok and type(line) == "string" and line ~= "" then
+      Skilly.Print(i .. ") " .. line)
+      shown = shown + 1
+    end
+  end
+  return shown
+end
+
 local maybeHighlightRecommended
 
 
@@ -126,10 +165,12 @@ function Skilly.UI.PrintResults(entries, fullEntries, opts)
   local mode = type(opts) == "table" and opts.mode or nil
   local sig = recommendationSignature(entries, fullEntries, mode)
   if not explicit and sig and sig == lastRecommendationSignature then
+    local shown = false
     if type(Skilly.UI.ShowResults) == "function" then
-      pcall(Skilly.UI.ShowResults, entries)
+      local okShow, result = pcall(Skilly.UI.ShowResults, entries)
+      shown = okShow and result == true
     end
-    return
+    if shown then return end
   end
 
   local showWindow = type(Skilly.UI.ShowResults) == "function"
@@ -148,10 +189,13 @@ function Skilly.UI.PrintResults(entries, fullEntries, opts)
   lastRecommendationSignature = sig
 
   local top = entries[1]
-  local ok, line = pcall(Skilly.Rank.Describe, top)
-  if ok and type(line) == "string" and line ~= "" then
-    Skilly.Print("Best craft: with materials on hand - " .. line)
-  end
+  local resultCount = 5
+  if type(SkillyDB) == "table" then resultCount = tonumber(SkillyDB.resultCount) or 5 end
+  local maxLines = math.floor(resultCount)
+  if maxLines < 1 then maxLines = 1 elseif maxLines > 10 then maxLines = 10 end
+
+  Skilly.Print("Skilly recommendations:")
+  printGroupedChatEntries(entries, maxLines)
 
   local fullTop = type(fullEntries) == "table" and fullEntries[1] or nil
   if type(fullTop) == "table" then
@@ -171,17 +215,6 @@ function Skilly.UI.PrintResults(entries, fullEntries, opts)
       for _, hint in ipairs(hints) do
         if type(hint) == "string" and hint ~= "" then Skilly.Print(hint) end
       end
-    end
-  end
-
-  local resultCount = 5
-  if type(SkillyDB) == "table" then resultCount = tonumber(SkillyDB.resultCount) or 5 end
-  local maxLines = math.floor(resultCount)
-  if maxLines < 1 then maxLines = 1 elseif maxLines > 10 then maxLines = 10 end
-  for i = 2, math.min(#entries, maxLines) do
-    local okRow, row = pcall(Skilly.Rank.Describe, entries[i])
-    if okRow and type(row) == "string" and row ~= "" then
-      Skilly.Print(i .. ") " .. row)
     end
   end
 end
@@ -207,17 +240,9 @@ local minimapButton = nil
 local minimapBuildFailed = false
 
 local function tradeSkillLinkedOrGuild()
-  local fn = _G.IsTradeSkillLinked
-  if type(fn) == "function" then
-    local ok, linked, name = pcall(fn)
-    if ok and (linked == true or (type(name) == "string" and name ~= "")) then
-      return true
-    end
-  end
-  fn = _G.IsTradeSkillGuild
-  if type(fn) == "function" then
-    local ok, isGuild = pcall(fn)
-    if ok and isGuild == true then return true end
+  if type(Skilly.Scan) == "table" and type(Skilly.Scan.UnsupportedView) == "function" then
+    local ok, unsupported = pcall(Skilly.Scan.UnsupportedView)
+    if ok then return unsupported == true end
   end
   return false
 end
@@ -286,9 +311,37 @@ local function autoAdviceSignatureForSnapshot(snapshot)
   return table.concat({ profession, skill, maxSkill, count }, ":")
 end
 
-local function maybeAutoAdvice(event)
+local function applyAutoAdvice(snapshot)
   if not autoAdviceEnabled() then return end
   if not autoAdviceOpen then return end
+  if tradeSkillLinkedOrGuild() then return end
+  if type(snapshot) ~= "table" or type(snapshot.profession) ~= "string"
+      or snapshot.profession == "" then return end
+
+  local sig = autoAdviceSignatureForSnapshot(snapshot)
+  if not sig or sig == autoAdviceSignature then return end
+
+  autoAdviceSignature = sig
+  autoAdviceAt = nowSeconds()
+  if type(Skilly.Recommend) == "function" then
+    pcall(Skilly.Recommend)
+  end
+end
+
+local function maybeAutoAdvice(event)
+  if not autoAdviceEnabled() or not autoAdviceOpen or tradeSkillLinkedOrGuild() then return end
+
+  local scan = Skilly.Scan
+  if type(scan) ~= "table" or type(scan.Current) ~= "function" then return end
+  local ok, snapshot = pcall(scan.Current)
+  if not ok or type(snapshot) ~= "table" then return end
+  applyAutoAdvice(snapshot)
+end
+
+-- SB-87: if the profession window was already open before addon load, the show
+-- event is already gone. Scan once on login and reuse the same signature gate.
+function Skilly.UI.CheckProfessionAtLogin()
+  if not autoAdviceEnabled() then return end
   if tradeSkillLinkedOrGuild() then return end
 
   local scan = Skilly.Scan
@@ -297,15 +350,8 @@ local function maybeAutoAdvice(event)
   if not ok or type(snapshot) ~= "table" then return end
   if type(snapshot.profession) ~= "string" or snapshot.profession == "" then return end
 
-  local sig = autoAdviceSignatureForSnapshot(snapshot)
-  if not sig then return end
-  if sig == autoAdviceSignature then return end
-
-  autoAdviceSignature = sig
-  autoAdviceAt = nowSeconds()
-  if type(Skilly.Recommend) == "function" then
-    pcall(Skilly.Recommend)
-  end
+  autoAdviceOpen = true
+  applyAutoAdvice(snapshot)
 end
 
 local function companionAnchorEnabled()
@@ -610,15 +656,6 @@ local function placeRow(row, y, headerText, name, detail, recipe)
   return y + nameH + 2 + detailH + 8
 end
 
-local function resultGroup(entry)
-  if type(entry) ~= "table" then return "other" end
-  local craftable = tonumber(entry.craftable) or 0
-  if craftable > 0 then return "now" end
-  local missing = type(entry.missing) == "table" and entry.missing or nil
-  if missing and #missing > 0 then return "buy" end
-  return "other"
-end
-
 function Skilly.UI.ShowResults(entries)
   if type(entries) ~= "table" or type(entries[1]) ~= "table" then return false end
   if not resultsFrame and not resultsBuildFailed then
@@ -647,9 +684,7 @@ function Skilly.UI.ShowResults(entries)
       local group = resultGroup(entry)
       local headerText = nil
       if group ~= lastGroup then
-        if group == "now" then headerText = "Make now (materials on hand)"
-        elseif group == "buy" then headerText = "Buy from AH / missing materials"
-        else headerText = "Other recommendations" end
+        headerText = RESULT_GROUP_TITLES[group] or RESULT_GROUP_TITLES.other
         lastGroup = group
       end
       local recipe = type(entry.recipe) == "table" and entry.recipe or {}
@@ -692,37 +727,97 @@ function Skilly.UI.ToggleResults()
   return false
 end
 
--- SB-15: simple draggable minimap launcher, no LibDBIcon.
+-- SB-15/SB-86: opt-in draggable launcher, no LibDBIcon. The saved DB value is
+-- the exact SetPoint tuple; a drop is normalized only for parent scale.
+local MINIMAP_DEFAULTS = {
+  parentKey = "Minimap",
+  point = "CENTER",
+  relativePoint = "TOPRIGHT",
+  x = -18,
+  y = -18,
+  visible = false,
+}
+
+local MINIMAP_POINTS = {
+  TOPLEFT = true, TOP = true, TOPRIGHT = true,
+  LEFT = true, CENTER = true, RIGHT = true,
+  BOTTOMLEFT = true, BOTTOM = true, BOTTOMRIGHT = true,
+}
+
+local function finiteNumber(value, fallback)
+  local n = tonumber(value)
+  if n == nil or n ~= n or n == math.huge or n == -math.huge then return fallback end
+  return n
+end
+
 local function minimapSettings()
-  local db = type(SkillyDB) == "table" and SkillyDB or nil
-  local m = db and db.minimap or nil
+  if type(Skilly.InitDB) == "function" then pcall(Skilly.InitDB) end
+  if type(SkillyDB) ~= "table" then SkillyDB = {} end
+  local m = SkillyDB.minimap
   if type(m) ~= "table" then
-    m = { point = "CENTER", x = 0, y = 0, visible = true }
-    if db then db.minimap = m end
+    m = {}
+    SkillyDB.minimap = m
   end
-  if type(m.point) ~= "string" or m.point == "" then m.point = "CENTER" end
-  m.x = tonumber(m.x) or 0
-  m.y = tonumber(m.y) or 0
+  if m.parentKey ~= "Minimap" and m.parentKey ~= "UIParent" then
+    m.parentKey = MINIMAP_DEFAULTS.parentKey
+  end
+  if type(m.point) ~= "string" or not MINIMAP_POINTS[m.point] then
+    m.point = MINIMAP_DEFAULTS.point
+  end
+  if type(m.relativePoint) ~= "string" or not MINIMAP_POINTS[m.relativePoint] then
+    m.relativePoint = MINIMAP_DEFAULTS.relativePoint
+  end
+  m.x = finiteNumber(m.x, MINIMAP_DEFAULTS.x)
+  m.y = finiteNumber(m.y, MINIMAP_DEFAULTS.y)
+  if type(m.visible) ~= "boolean" then m.visible = MINIMAP_DEFAULTS.visible end
   return m
 end
 
-local function clampMinimap(v)
-  local n = tonumber(v) or 0
-  if n < -120 then n = -120 elseif n > 120 then n = 120 end
-  return math.floor(n + 0.5)
+local function minimapParent(m)
+  if m and m.parentKey == "UIParent" then return _G.UIParent end
+  return _G.Minimap or _G.UIParent
 end
 
 local function updateMinimapButtonPosition()
   if not minimapButton then return end
   local m = minimapSettings()
-  m.x = clampMinimap(m.x)
-  m.y = clampMinimap(m.y)
+  local parent = minimapParent(m)
+  if not parent then return end
   callMethod(minimapButton, "ClearAllPoints")
-  callMethod(minimapButton, "SetPoint", "CENTER", _G.Minimap or _G.UIParent, "CENTER", m.x, m.y)
+  callMethod(minimapButton, "SetPoint", m.point, parent, m.relativePoint, m.x, m.y)
+end
+
+local function saveMinimapDrop(self)
+  local m = minimapSettings()
+  local parent = minimapParent(m)
+  if not parent then return false end
+
+  local okSelf, sx, sy = pcall(function() return self:GetCenter() end)
+  local okParent, px, py = pcall(function() return parent:GetCenter() end)
+  sx = finiteNumber(sx, nil)
+  sy = finiteNumber(sy, nil)
+  px = finiteNumber(px, nil)
+  py = finiteNumber(py, nil)
+  if not okSelf or not okParent or sx == nil or sy == nil or px == nil or py == nil then
+    return false
+  end
+
+  local okScale, scale = pcall(function() return parent:GetEffectiveScale() end)
+  scale = finiteNumber(scale, 1)
+  -- GetCenter() is in screen pixels; SetPoint offsets are in parent-local units.
+  if not okScale or scale <= 0 then scale = 1 end
+
+  m.parentKey = parent == _G.UIParent and "UIParent" or "Minimap"
+  m.point = "CENTER"
+  m.relativePoint = "CENTER"
+  m.x = (sx - px) / scale
+  m.y = (sy - py) / scale
+  updateMinimapButtonPosition()
+  return true
 end
 
 local function buildMinimapButton()
-  local parent = _G.Minimap or _G.UIParent
+  local parent = minimapParent(minimapSettings())
   local btn = createFrame("Button", "SkillyMinimapButton", parent)
   if not btn then return nil end
   callMethod(btn, "SetWidth", 31)
@@ -755,20 +850,11 @@ local function buildMinimapButton()
   end)
   callMethod(btn, "SetScript", "OnDragStop", function(self)
     if hasMethod(self, "StopMovingOrSizing") then pcall(self.StopMovingOrSizing, self) end
-    local m = minimapSettings()
-    local okCx, cx, cy = pcall(function() return self:GetCenter() end)
-    local okMx, mx, my = pcall(function() local mm=_G.Minimap; return mm and mm:GetCenter() end)
-    if okCx and okMx and type(cx)=="number" and type(cy)=="number" and type(mx)=="number" and type(my)=="number" then
-      m.x = clampMinimap(cx - mx)
-      m.y = clampMinimap(cy - my)
-      if type(SkillyDB) == "table" then SkillyDB.minimap = m end
-      updateMinimapButtonPosition()
-    end
+    saveMinimapDrop(self)
   end)
   callMethod(btn, "SetScript", "OnClick", function(_, button)
     if button == "RightButton" then
-      if type(Skilly.OpenSettings) == "function" then pcall(Skilly.OpenSettings)
-      elseif type(Skilly.Print) == "function" then pcall(Skilly.Print, "Settings unavailable.") end
+      if type(Skilly.OpenSettings) == "function" then pcall(Skilly.OpenSettings) end
       return
     end
     runRecommend()
@@ -778,9 +864,9 @@ local function buildMinimapButton()
     if tt and hasMethod(tt, "SetOwner") then
       pcall(tt.SetOwner, tt, self, "ANCHOR_LEFT")
       pcall(tt.SetText, tt, "Skilly")
-      pcall(tt.AddLine, tt, "Left-click: /skilly next", 1, 1, 1)
+      pcall(tt.AddLine, tt, "Left-click: recommend and show results", 1, 1, 1)
       pcall(tt.AddLine, tt, "Right-click: settings", 1, 1, 1)
-      pcall(tt.AddLine, tt, "Drag: move", 1, 1, 1)
+      pcall(tt.AddLine, tt, "Drag: save position", 1, 1, 1)
       pcall(tt.Show, tt)
     end
   end)
@@ -796,7 +882,7 @@ end
 
 function Skilly.UI.UpdateMinimapButton()
   local m = minimapSettings()
-  local visible = m.visible ~= false
+  local visible = m.visible == true
   if not visible then
     if minimapButton then callMethod(minimapButton, "Hide") end
     return

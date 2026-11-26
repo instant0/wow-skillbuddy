@@ -337,11 +337,11 @@ function Skilly.Rank.FullEffectiveCost(recipe)
     reagents = {}, invalid = false,
   }
 
+  -- SB-89: Cost.lua's fullMaterialRows is private. A missing public helper
+  -- means no full-basis result, never a call to an undefined local function.
   local rows
   if type(Skilly.Cost.FullMissing) == "function" then
     rows = Skilly.Cost.FullMissing(recipe)
-  else
-    rows = fullMaterialRows(recipe)
   end
   if type(rows) ~= "table" or #rows == 0 then
     info.invalid = true
@@ -518,7 +518,7 @@ function Skilly.Rank.Best(snapshot, mode, costBasis)
   limit = math.floor(limit)
   if limit < 1 then limit = 1 elseif limit > 10 then limit = 10 end
 
-  for _, recipe in ipairs(snapshot.recipes) do
+  for index, recipe in ipairs(snapshot.recipes) do
     if type(recipe) == "table" and type(recipe.name) == "string" and recipe.name ~= "" then
       local key = type(recipe.key) == "string" and recipe.key or string.lower(recipe.name)
       local skip = ignored and ignored[key] == true
@@ -572,6 +572,13 @@ function Skilly.Rank.Best(snapshot, mode, costBasis)
             craftable = math.floor(craftable)
 
             local display, source, denominator = expectedCraftsFor(recipe, skill, p)
+            -- SB-89: the exact denominator is the comparator/cost basis. The
+            -- displayed craft count is rounded guidance only.
+            local scoreDenominator = featureEnabled("useProbability", true)
+                and denominator or 1
+            if not scoreDenominator or scoreDenominator <= 0 then
+              scoreDenominator = display
+            end
             local override = source == "observed" and denominator or nil
             local score, info = math.huge, {}
             if full then
@@ -582,7 +589,7 @@ function Skilly.Rank.Best(snapshot, mode, costBasis)
                 if type(details) == "table" then info = details end
               end
               if score == math.huge then
-                local crafts = tonumber(denominator) or 1
+                local crafts = tonumber(scoreDenominator) or 1
                 if crafts <= 0 then crafts = 1 end
                 score = (tonumber(costInfo.fullCost) or 0) * crafts
               end
@@ -618,6 +625,8 @@ function Skilly.Rank.Best(snapshot, mode, costBasis)
               cost = full and fullCost or outOfPocket,
               fullCost = fullCost,
               outOfPocketCost = outOfPocket,
+              estimatedCost = tonumber(costInfo.estimatedCost) or 0,
+              estimatedReagents = tonumber(costInfo.estimated) or 0,
               costBasis = full and "full" or "onHand",
               craftable = full and 0 or craftable,
               missing = missing,
@@ -625,7 +634,11 @@ function Skilly.Rank.Best(snapshot, mode, costBasis)
               potentialPoints = potentialPoints,
               score = score,
               expectedCrafts = display,
+              expectedDenominator = scoreDenominator,
               probabilitySource = source,
+              thresholdSource = recipe.thresholdSource or "estimate",
+              observedRate = source == "observed" and denominator or nil,
+              sourceGrade = grade,
             }
             results[#results + 1] = entry
             meta[entry] = {
@@ -634,6 +647,7 @@ function Skilly.Rank.Best(snapshot, mode, costBasis)
               estimated = tonumber(info.estimatedReagents) or 0,
               crossSkill = tonumber(info.crossSkillReagents) or 0,
               madeMax = tonumber(recipe.madeMax) or 1,
+              order = index,
             }
           end
         end
@@ -643,6 +657,8 @@ function Skilly.Rank.Best(snapshot, mode, costBasis)
 
   local compare
   if cheap then
+    -- SB-89: named cheap tie-break order: exact score, p, potential points,
+    -- source grade, complexity, craftable, key, then scan order.
     compare = function(a, b)
       if a.score ~= b.score then return a.score < b.score end
       if a.p ~= b.p then return a.p > b.p end
@@ -655,9 +671,12 @@ function Skilly.Rank.Best(snapshot, mode, costBasis)
       local bComplex = mb.estimated + mb.crossSkill
       if aComplex ~= bComplex then return aComplex < bComplex end
       if a.craftable ~= b.craftable then return a.craftable > b.craftable end
-      return ma.key < mb.key
+      if ma.key ~= mb.key then return ma.key < mb.key end
+      return (ma.order or 0) < (mb.order or 0)
     end
   else
+    -- SB-89: named best tie-break order: potential points, p, exact score,
+    -- cost, madeMax, key, then scan order.
     compare = function(a, b)
       local ap = tonumber(a.potentialPoints) or 0
       local bp = tonumber(b.potentialPoints) or 0
@@ -667,7 +686,8 @@ function Skilly.Rank.Best(snapshot, mode, costBasis)
       if a.cost ~= b.cost then return a.cost < b.cost end
       local ma, mb = meta[a], meta[b]
       if ma.madeMax ~= mb.madeMax then return ma.madeMax > mb.madeMax end
-      return ma.key < mb.key
+      if ma.key ~= mb.key then return ma.key < mb.key end
+      return (ma.order or 0) < (mb.order or 0)
     end
   end
 
@@ -896,23 +916,47 @@ function Skilly.Rank.Describe(entry)
   end
 
   local parts = { header }
+  parts[#parts + 1] = "probability source: "
+      .. tostring(entry.probabilitySource or "color")
   if entry.probabilitySource ~= "observed" then
     parts[#parts + 1] = "~" .. formatCount(crafts)
-        .. (crafts == 1 and " craft" or " crafts")
+        .. (crafts == 1 and " craft needed" or " crafts needed")
+        .. " (rounded)"
+  end
+  local points = tonumber(entry.potentialPoints) or 0
+  if points > 0 then
+    parts[#parts + 1] = "~" .. formatCount(points) .. " skill points"
   end
 
   local cost = tonumber(entry.cost) or 0
+  local denominator = tonumber(entry.expectedDenominator) or crafts
+  if denominator <= 0 then denominator = crafts end
   if cost > 0 then
-    parts[#parts + 1] = formatMoney(cost * crafts) .. " per point"
+    parts[#parts + 1] = formatMoney(cost * denominator) .. " per expected point"
   else
-    parts[#parts + 1] = "free per point"
+    parts[#parts + 1] = "free per expected point"
+  end
+  local outOfPocket = tonumber(entry.outOfPocketCost) or cost
+  if outOfPocket < 0 then outOfPocket = 0 end
+  parts[#parts + 1] = "out-of-pocket " .. formatMoney(outOfPocket)
+  local estimatedCost = tonumber(entry.estimatedCost) or 0
+  local estimatedReagents = tonumber(entry.estimatedReagents) or 0
+  if estimatedCost > 0 or estimatedReagents > 0 then
+    parts[#parts + 1] = tostring(estimatedReagents) .. " unpriced "
+        .. (estimatedReagents == 1 and "material" or "materials")
+        .. " (" .. formatMoney(estimatedCost) .. " estimate, excluded)"
   end
 
   local craftable = tonumber(entry.craftable) or 0
   if craftable > 0 then
-    parts[#parts + 1] = formatCount(craftable)
-        .. (recipe.learnable and " craftable after learning"
-            or " craftable with your materials")
+    local ownership = "your materials"
+    if type(Skilly.Cost) == "table" and type(Skilly.Cost.OwnershipLabel) == "function" then
+      local okOwn, label = pcall(Skilly.Cost.OwnershipLabel, recipe)
+      if okOwn and type(label) == "string" and label ~= "" then ownership = label end
+    end
+    parts[#parts + 1] = "materials: " .. formatCount(craftable)
+        .. (recipe.learnable and (" craftable after learning (" .. ownership .. ")")
+            or (" craftable with " .. ownership))
   end
   if recipe.learnable then
     parts[#parts + 1] = "learn at skill "
@@ -924,12 +968,33 @@ function Skilly.Rank.Describe(entry)
     missingText = describeMissing(entry.missing)
   end
   if missingText ~= "" then
-    parts[#parts + 1] = "Buy " .. missingText
+    parts[#parts + 1] = "materials: buy " .. missingText
   elseif craftable <= 0 then
-    parts[#parts + 1] = recipe.learnable
-        and "all materials on hand after learning"
-        or "all materials on hand"
+    parts[#parts + 1] = "materials: " .. (recipe.learnable
+        and "all on hand after learning"
+        or "all on hand")
   end
+
+  if type(Skilly.Cost) == "table"
+      and type(Skilly.Cost.ProvenanceSummary) == "function" then
+    local okProv, prov = pcall(Skilly.Cost.ProvenanceSummary, recipe)
+    if okProv and type(prov) == "table" and type(prov.text) == "string"
+        and prov.text ~= "" then
+      parts[#parts + 1] = "availability: " .. prov.text
+    end
+  end
+
+  local reason
+  if recipe.learnable then
+    reason = "unlock available at current skill"
+  elseif craftable > 0 then
+    reason = "materials on hand"
+  elseif type(entry.missing) == "table" and #entry.missing > 0 then
+    reason = "missing materials priced"
+  else
+    reason = "ranked by skill-up and cost"
+  end
+  parts[#parts + 1] = "reason: " .. reason
 
   local synergy = Skilly.Rank.SynergyHint(recipe)
   if synergy then parts[#parts + 1] = synergy end

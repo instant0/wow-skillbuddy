@@ -407,7 +407,28 @@ local function scanCurrentClassic()
   return snapshot
 end
 
+-- SB-87: linked/guild views belong to other characters or the guild bank. They
+-- must never be ranked as the player's own next craft.
+local function unsupportedProfessionView()
+  local fn = _G.IsTradeSkillLinked
+  if type(fn) == "function" then
+    local ok, linked, name = pcall(fn)
+    if ok and (linked == true or (type(name) == "string" and name ~= "")) then
+      return true
+    end
+  end
+  fn = _G.IsTradeSkillGuild
+  if type(fn) == "function" then
+    local ok, isGuild = pcall(fn)
+    if ok and isGuild == true then return true end
+  end
+  return false
+end
+
+Skilly.Scan.UnsupportedView = unsupportedProfessionView
+
 function Skilly.Scan.Current()
+  if unsupportedProfessionView() then return nil end
   if type(Skilly.ResetSourceCache) == "function" then
     pcall(Skilly.ResetSourceCache)
   end

@@ -6,6 +6,7 @@
 
 Skilly = Skilly or {}
 Skilly.Hints = Skilly.Hints or {}
+local Internal = Skilly.Internal or {}
 
 local MAX_HINTS = 2
 
@@ -187,7 +188,8 @@ local function deadEndReagentLines(entry)
 
   local reagents = type(recipe.reagents) == "table" and recipe.reagents or {}
   for _, reagent in ipairs(reagents) do
-    local key = Skilly.ReagentKey and Skilly.ReagentKey(reagent) or reagent.key
+    local key = Internal.ReagentKey(reagent)
+    if type(key) ~= "string" or key == "" then key = reagent.key end
     if type(key) == "string" and key ~= "" then
       local otherNonGray = false
       local otherTotal = 0
@@ -195,8 +197,9 @@ local function deadEndReagentLines(entry)
         if type(other) == "table" and other ~= recipe then
           local ores = type(other.reagents) == "table" and other.reagents or {}
           for _, orr in ipairs(ores) do
-            local ok2 = Skilly.ReagentKey and Skilly.ReagentKey(orr) or orr.key
-            if ok2 == key then
+            local otherKey = Internal.ReagentKey(orr)
+            if type(otherKey) ~= "string" or otherKey == "" then otherKey = orr.key end
+            if otherKey == key then
               otherTotal = otherTotal + 1
               if recipeStillGivesSkill(other, skill, maxSkill) then
                 otherNonGray = true
