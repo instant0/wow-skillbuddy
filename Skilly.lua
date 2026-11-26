@@ -115,6 +115,9 @@ function Skilly.InitSettings()
         if type(m) ~= "table" then m = {} end
         m.visible = (value == true)
         dbSet("minimap", m)
+        if type(Skilly.UI) == "table" and type(Skilly.UI.UpdateMinimapButton) == "function" then
+          pcall(Skilly.UI.UpdateMinimapButton)
+        end
       end,
       "Show the launcher button near the minimap.",
       general
@@ -1100,6 +1103,9 @@ if okCreate and frame then
     if type(Skilly.InitSettings) == "function" then pcall(Skilly.InitSettings) end
     if type(Skilly.InitSources) == "function" then pcall(Skilly.InitSources) end
 
+    if type(Skilly.UI) == "table" and type(Skilly.UI.UpdateMinimapButton) == "function" then
+      pcall(Skilly.UI.UpdateMinimapButton)
+    end
     if type(Skilly.Print) == "function" then
       pcall(Skilly.Print, "Skilly " .. tostring(Skilly.version) .. " loaded")
     end

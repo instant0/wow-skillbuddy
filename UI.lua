@@ -41,24 +41,26 @@ local function createFontString(parent, name, font)
   return nil
 end
 
+local function runRecommend()
+  if type(Skilly.InitDB) == "function" then pcall(Skilly.InitDB) end
+  local recommend = Skilly.Recommend
+  if type(recommend) == "function" then
+    local ok, err = pcall(recommend)
+    if not ok and type(Skilly.Print) == "function" then
+      pcall(Skilly.Print, "Recommendation failed: " .. tostring(err))
+    end
+    return
+  end
+  if type(Skilly.Print) == "function" then
+    pcall(Skilly.Print, "Recommendation unavailable: missing Skilly.Recommend.")
+  end
+end
+
 -- SB-19: hidden binding target; OnClick uses the same recommendation path as /skilly next.
 local bindingButton = createFrame("Button", "SkillyBindingButton", _G.UIParent)
 if bindingButton then
   callMethod(bindingButton, "Hide")
-  callMethod(bindingButton, "SetScript", "OnClick", function()
-    if type(Skilly.InitDB) == "function" then pcall(Skilly.InitDB) end
-    local recommend = Skilly.Recommend
-    if type(recommend) == "function" then
-      local ok, err = pcall(recommend)
-      if not ok and type(Skilly.Print) == "function" then
-        pcall(Skilly.Print, "Recommendation failed: " .. tostring(err))
-      end
-      return
-    end
-    if type(Skilly.Print) == "function" then
-      pcall(Skilly.Print, "Recommendation unavailable: missing Skilly.Recommend.")
-    end
-  end)
+  callMethod(bindingButton, "SetScript", "OnClick", runRecommend)
 end
 
 local function chatRecommendationsEnabled()
@@ -201,6 +203,8 @@ local professionsHooked = false
 local autoAdviceOpen = false
 local autoAdviceSignature = nil
 local autoAdviceAt = 0
+local minimapButton = nil
+local minimapBuildFailed = false
 
 local function tradeSkillLinkedOrGuild()
   local fn = _G.IsTradeSkillLinked
@@ -686,6 +690,125 @@ function Skilly.UI.ToggleResults()
     return Skilly.UI.ShowResults(lastEntries)
   end
   return false
+end
+
+-- SB-15: simple draggable minimap launcher, no LibDBIcon.
+local function minimapSettings()
+  local db = type(SkillyDB) == "table" and SkillyDB or nil
+  local m = db and db.minimap or nil
+  if type(m) ~= "table" then
+    m = { point = "CENTER", x = 0, y = 0, visible = true }
+    if db then db.minimap = m end
+  end
+  if type(m.point) ~= "string" or m.point == "" then m.point = "CENTER" end
+  m.x = tonumber(m.x) or 0
+  m.y = tonumber(m.y) or 0
+  return m
+end
+
+local function clampMinimap(v)
+  local n = tonumber(v) or 0
+  if n < -120 then n = -120 elseif n > 120 then n = 120 end
+  return math.floor(n + 0.5)
+end
+
+local function updateMinimapButtonPosition()
+  if not minimapButton then return end
+  local m = minimapSettings()
+  m.x = clampMinimap(m.x)
+  m.y = clampMinimap(m.y)
+  callMethod(minimapButton, "ClearAllPoints")
+  callMethod(minimapButton, "SetPoint", "CENTER", _G.Minimap or _G.UIParent, "CENTER", m.x, m.y)
+end
+
+local function buildMinimapButton()
+  local parent = _G.Minimap or _G.UIParent
+  local btn = createFrame("Button", "SkillyMinimapButton", parent)
+  if not btn then return nil end
+  callMethod(btn, "SetWidth", 31)
+  callMethod(btn, "SetHeight", 31)
+  callMethod(btn, "SetFrameStrata", "MEDIUM")
+  callMethod(btn, "SetFrameLevel", 8)
+  callMethod(btn, "SetMovable", true)
+  callMethod(btn, "EnableMouse", true)
+  callMethod(btn, "RegisterForClicks", "LeftButtonUp", "RightButtonUp")
+  callMethod(btn, "RegisterForDrag", "LeftButton")
+
+  local bg = nil
+  if hasMethod(btn, "CreateTexture") then
+    local ok, tex = pcall(btn.CreateTexture, btn, nil, "BACKGROUND")
+    if ok then bg = tex end
+  end
+  if bg then
+    callMethod(bg, "SetAllPoints", btn)
+    callMethod(bg, "SetTexture", "Interface\\Minimap\\UI-Minimap-Background")
+  end
+
+  local label = createFontString(btn, "SkillyMinimapLabel", "GameFontNormalSmall")
+  if label then
+    callMethod(label, "SetPoint", "CENTER", 0, 0)
+    callMethod(label, "SetText", "S")
+  end
+
+  callMethod(btn, "SetScript", "OnDragStart", function(self)
+    if hasMethod(self, "StartMoving") then pcall(self.StartMoving, self) end
+  end)
+  callMethod(btn, "SetScript", "OnDragStop", function(self)
+    if hasMethod(self, "StopMovingOrSizing") then pcall(self.StopMovingOrSizing, self) end
+    local m = minimapSettings()
+    local okCx, cx, cy = pcall(function() return self:GetCenter() end)
+    local okMx, mx, my = pcall(function() local mm=_G.Minimap; return mm and mm:GetCenter() end)
+    if okCx and okMx and type(cx)=="number" and type(cy)=="number" and type(mx)=="number" and type(my)=="number" then
+      m.x = clampMinimap(cx - mx)
+      m.y = clampMinimap(cy - my)
+      if type(SkillyDB) == "table" then SkillyDB.minimap = m end
+      updateMinimapButtonPosition()
+    end
+  end)
+  callMethod(btn, "SetScript", "OnClick", function(_, button)
+    if button == "RightButton" then
+      if type(Skilly.OpenSettings) == "function" then pcall(Skilly.OpenSettings)
+      elseif type(Skilly.Print) == "function" then pcall(Skilly.Print, "Settings unavailable.") end
+      return
+    end
+    runRecommend()
+  end)
+  callMethod(btn, "SetScript", "OnEnter", function(self)
+    local tt = _G.GameTooltip
+    if tt and hasMethod(tt, "SetOwner") then
+      pcall(tt.SetOwner, tt, self, "ANCHOR_LEFT")
+      pcall(tt.SetText, tt, "Skilly")
+      pcall(tt.AddLine, tt, "Left-click: /skilly next", 1, 1, 1)
+      pcall(tt.AddLine, tt, "Right-click: settings", 1, 1, 1)
+      pcall(tt.AddLine, tt, "Drag: move", 1, 1, 1)
+      pcall(tt.Show, tt)
+    end
+  end)
+  callMethod(btn, "SetScript", "OnLeave", function()
+    local tt = _G.GameTooltip
+    if tt and hasMethod(tt, "Hide") then pcall(tt.Hide, tt) end
+  end)
+
+  minimapButton = btn
+  updateMinimapButtonPosition()
+  return btn
+end
+
+function Skilly.UI.UpdateMinimapButton()
+  local m = minimapSettings()
+  local visible = m.visible ~= false
+  if not visible then
+    if minimapButton then callMethod(minimapButton, "Hide") end
+    return
+  end
+  if not minimapButton and not minimapBuildFailed then
+    local ok, btn = pcall(buildMinimapButton)
+    if not ok or not btn then minimapBuildFailed = true end
+  end
+  if minimapButton then
+    updateMinimapButtonPosition()
+    callMethod(minimapButton, "Show")
+  end
 end
 
 -- SB-52: copyable feedback window. WoW cannot write the OS clipboard from Lua,

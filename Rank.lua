@@ -875,11 +875,16 @@ function Skilly.Rank.Describe(entry)
     end
   end
 
+  -- SB-69: client difficulty color is authoritative. If model p reaches 1.0 on
+  -- a non-orange client color (yellow/green edge cases), do not present it as
+  -- misleading "Yellow ~100%"; show guaranteed but keep the mismatch explicit.
   local header
   if color == "Orange" then
     header = "Orange - guaranteed +1"
   elseif color == "Gray" then
     header = "Gray - no skillup"
+  elseif p >= 1 and (color == "Yellow" or color == "Green") then
+    header = "Guaranteed - " .. color .. " on client (~100%)"
   else
     header = color .. " ~" .. math.floor(p * 100 + 0.5) .. "%"
     if entry.probabilitySource == "observed" then
