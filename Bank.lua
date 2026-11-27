@@ -33,6 +33,15 @@ local function positiveInt(value)
   return math.floor(n)
 end
 
+-- SB-102: wall-clock via the safe-call path; only a finite positive timestamp.
+local function safeTime()
+  local ok, value = safeCall(_G.time)
+  if not ok then return nil end
+  local n = tonumber(value)
+  if not n or n <= 0 or n ~= n or n == math.huge or n == -math.huge then return nil end
+  return math.floor(n)
+end
+
 local function charDB()
   if type(SkillyCharDB) ~= "table" then return nil end
   return SkillyCharDB
@@ -90,7 +99,7 @@ function Bank.Info()
   if not cache then
     return { fresh = false, capturedAt = nil, age = nil, keys = 0 }
   end
-  local now = tonumber(type(_G.time) == "function" and _G.time() or nil)
+  local now = safeTime()
   local age = nil
   if now and now >= cache.capturedAt then age = math.floor(now - cache.capturedAt) end
   local keys = 0
@@ -182,8 +191,7 @@ function Bank.Capture(reason)
     return false, err or "capture failed"
   end
 
-  local now = tonumber(type(_G.time) == "function" and _G.time() or nil)
-  now = positiveInt(now)
+  local now = safeTime()
   if not now then
     return false, "time unavailable"
   end

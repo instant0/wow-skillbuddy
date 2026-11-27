@@ -470,6 +470,7 @@ function Skilly.UI.OnProfessionsWindowEvent(event)
     autoAdviceSignature = nil
     autoAdviceAt = 0
     pcall(Skilly.UI.UpdateCompanionAnchor)
+    pcall(Skilly.UI.TryAddSidebarTab)
     pcall(maybeAutoAdvice, event)
     return
   end
@@ -515,6 +516,82 @@ local function clientDifficultyColor(recipe)
   return r, g, b
 end
 
+-- SB-108: one visual style resolution. Stock WoW by default; a self-contained
+-- dark ElvUI-like palette when ElvUI is detected and the toggle is on. Never
+-- reads ElvUI SavedVariables or calls its APIs.
+local function useElvUISkinEnabled()
+  if type(Skilly.FeatureEnabled) ~= "function" then return true end
+  local ok, value = pcall(Skilly.FeatureEnabled, "useElvUISkin", true)
+  return ok and value == true
+end
+
+local function elvUIPresent()
+  local addon = _G.C_AddOns
+  if type(addon) ~= "table" or type(addon.IsAddOnLoaded) ~= "function" then return false end
+  local ok, loaded = pcall(addon.IsAddOnLoaded, "ElvUI")
+  return ok and loaded == true
+end
+
+function Skilly.UI.Style()
+  if useElvUISkinEnabled() and elvUIPresent() then
+    return {
+      name = "elvui",
+      headerColor = { 0.35, 0.85, 0.4, 1 },
+      backdropColor = { 0.06, 0.06, 0.07, 0.96 },
+      borderColor = { 0.25, 0.25, 0.28, 1 },
+    }
+  end
+  return {
+    name = "stock",
+    headerColor = { 1, 0.82, 0, 1 },
+    backdropColor = nil,
+    borderColor = nil,
+  }
+end
+
+-- SB-108: guarded, opt-in sidebar tab. Appends a Skilly tab to the shared
+-- Professions sidebar when present; never reparents Blizzard tabs or assumes an
+-- index. Falls back to the floating companion anchor otherwise.
+local function sidebarTabEnabled()
+  if type(Skilly.FeatureEnabled) ~= "function" then return false end
+  local ok, value = pcall(Skilly.FeatureEnabled, "useSidebarTab", false)
+  return ok and value == true
+end
+
+local sidebarTab = nil
+local sidebarTabTried = false
+
+function Skilly.UI.TryAddSidebarTab()
+  if sidebarTabTried then return sidebarTab end
+  sidebarTabTried = true
+  if not sidebarTabEnabled() then return nil end
+
+  local sidebar = _G.ProfessionsFrameTabSideBar
+  if type(sidebar) ~= "table" then return nil end
+  if type(sidebar.Tabs) ~= "table" then return nil end
+
+  local tab = createFrame("Button", "SkillySidebarTab", sidebar, "QuestLogTabButtonTemplate")
+  if not tab then
+    tab = createFrame("Button", "SkillySidebarTab", sidebar, "UIPanelButtonTemplate")
+  end
+  if not tab then return nil end
+
+  callMethod(tab, "SetText", "Skilly")
+  callMethod(tab, "SetScript", "OnClick", function()
+    if type(Skilly.UI.ToggleResults) == "function" then
+      pcall(Skilly.UI.ToggleResults)
+    end
+  end)
+  local okInsert = pcall(table.insert, sidebar.Tabs, tab)
+  if not okInsert then
+    callMethod(tab, "Hide")
+    return nil
+  end
+  callMethod(tab, "Show")
+  sidebarTab = tab
+  return tab
+end
+
 local function buildResultsFrame()
   local frame = createFrame("Frame", "SkillyResultsFrame", _G.UIParent,
       "BasicFrameTemplate")
@@ -541,6 +618,16 @@ local function buildResultsFrame()
       edgeSize = 16,
       insets = { left = 4, right = 4, top = 4, bottom = 4 },
     })
+  end
+
+  local style = Skilly.UI.Style()
+  if style.backdropColor then
+    callMethod(frame, "SetBackdropColor", style.backdropColor[1],
+        style.backdropColor[2], style.backdropColor[3], style.backdropColor[4])
+  end
+  if style.borderColor then
+    callMethod(frame, "SetBackdropBorderColor", style.borderColor[1],
+        style.borderColor[2], style.borderColor[3], style.borderColor[4])
   end
 
   callMethod(frame, "SetScript", "OnDragStart", function()
@@ -589,7 +676,8 @@ local function buildResultsFrame()
     if header then
       callMethod(header, "SetWidth", contentWidth)
       callMethod(header, "SetJustifyH", "LEFT")
-      callMethod(header, "SetTextColor", 1, 0.82, 0, 1)
+      callMethod(header, "SetTextColor", style.headerColor[1],
+          style.headerColor[2], style.headerColor[3], style.headerColor[4])
     end
     if name then
       callMethod(name, "SetWidth", contentWidth)
@@ -939,8 +1027,11 @@ local function buildExportFrame()
     edgeSize = 16,
     insets = { left = 4, right = 4, top = 4, bottom = 4 },
   })
-  callMethod(frame, "SetBackdropColor", 0.05, 0.05, 0.08, 0.95)
-  callMethod(frame, "SetBackdropBorderColor", 0.6, 0.6, 0.6, 1)
+  local style = Skilly.UI.Style()
+  local bc = style.backdropColor or { 0.05, 0.05, 0.08, 0.95 }
+  local bd = style.borderColor or { 0.6, 0.6, 0.6, 1 }
+  callMethod(frame, "SetBackdropColor", bc[1], bc[2], bc[3], bc[4])
+  callMethod(frame, "SetBackdropBorderColor", bd[1], bd[2], bd[3], bd[4])
   callMethod(frame, "SetScript", "OnDragStart", function()
     callMethod(frame, "StartMoving")
   end)

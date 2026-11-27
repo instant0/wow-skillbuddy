@@ -209,9 +209,12 @@ function Internal.SafeResults(name, ...)
 end
 
 function Internal.ItemKey(link, name)
-  local id = link and string.match(link, "item:(%d+)")
-  if id then return "item:" .. id end
-  if name and name ~= "" then return string.lower(name) end
+  -- SB-101: only strings are parsed; a wrong-type link/name yields an empty key.
+  if type(link) == "string" then
+    local id = string.match(link, "item:(%d+)")
+    if id then return "item:" .. id end
+  end
+  if type(name) == "string" and name ~= "" then return string.lower(name) end
   return ""
 end
 
@@ -270,9 +273,6 @@ Skilly.Features = {
   { key = "useAuctionator", default = true, category = "Prices",
     label = "Auctionator prices",
     tooltip = "Allow read-only Auctionator price lookups when Auctionator is installed." },
-  { key = "useAuctioneer", default = false, category = "Prices",
-    label = "Auctioneer prices",
-    tooltip = "Disabled until an Auctioneer adapter is available. Enabling it now has no effect; no price source is registered." },
   { key = "useTSM", default = true, category = "Prices",
     label = "TSM prices",
     tooltip = "Allow read-only TradeSkillMaster price lookups when TSM is installed." },
@@ -287,8 +287,8 @@ Skilly.Features = {
     tooltip = "Treat /skilly asif-listed materials as free and available." },
 
   { key = "allowAHMaterials", default = true, category = "Ranking",
-    label = "Recommend bought materials",
-    tooltip = "Off: only on-hand or as-if-owned materials can satisfy a recipe." },
+    label = "Recommend AH (market) materials",
+    tooltip = "Off: AH/market prices are excluded; vendor-priced, manual, and as-if-owned materials remain eligible." },
   { key = "useAltInventory", default = false, category = "Ranking",
     label = "Include alt/external inventory (opt-in)",
     tooltip = "Opt-in external/alt counts. Default off for correctness: external counts are never described as \"your materials\"." },
@@ -340,6 +340,12 @@ Skilly.Features = {
   { key = "useCompanionAnchor", default = false, category = "Window",
     label = "Anchor to Professions window",
     tooltip = "Anchor Skilly results beside the Professions window instead of floating standalone." },
+  { key = "useSidebarTab", default = false, category = "Window",
+    label = "Dock in Professions sidebar",
+    tooltip = "Add a Skilly tab to the Professions window sidebar (opt-in). Falls back to the floating window when the sidebar is unavailable or unsafe." },
+  { key = "useElvUISkin", default = true, category = "Window",
+    label = "ElvUI-style skin",
+    tooltip = "Use a self-contained dark ElvUI-like palette when ElvUI is detected; otherwise the stock WoW look." },
   { key = "useAutoAdviceOnOpen", default = false, category = "Window",
     label = "Auto-advice on profession open",
     tooltip = "Print one Skilly recommendation when a compatible profession window opens." },

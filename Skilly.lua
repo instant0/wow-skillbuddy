@@ -4,7 +4,7 @@
 ------------------------------------------------------------------------------------]]
 
 Skilly = Skilly or {}
-Skilly.version = "0.4.9"
+Skilly.version = "0.4.18"
 
 BINDING_HEADER_SKILLY = "Skilly"
 BINDING_NAME_SKILLY_NEXT_CRAFT = "Next craft"
@@ -35,6 +35,12 @@ end
 local function dbSet(key, value)
   if type(SkillyDB) ~= "table" then SkillyDB = {} end
   SkillyDB[key] = value
+end
+
+-- SB-101: shared argument trim. Handles leading-only, trailing-only, both-sided,
+-- and all-space input without altering non-whitespace text.
+local function trim(s)
+  return string.gsub(tostring(s or ""), "^%s*(.-)%s*$", "%1")
 end
 
 -- SB-43: safe registry access for Settings and debug output.
@@ -331,7 +337,7 @@ local function buildFallbackSettingsPanel()
   fallbackSettingsPanel = panel
 
   safeFrameCall(panel, "SetWidth", 460)
-  safeFrameCall(panel, "SetHeight", 640)
+  -- Height is set at the end from the number of generated rows (SB-104).
   safeFrameCall(panel, "SetPoint", "CENTER", 0, 0)
   safeFrameCall(panel, "SetFrameStrata", "DIALOG")
   safeFrameCall(panel, "SetMovable", true)
@@ -427,6 +433,14 @@ local function buildFallbackSettingsPanel()
   safeFrameCall(panel, "SetScript", "OnShow", refreshCount)
   attachSettingsTooltip(panel, "Results to show: maximum number of recipes printed per recommendation.")
 
+  -- SB-104: size the panel to the rows actually generated so the last checkbox
+  -- and the result-count controls stay inside the clickable area. `y` is the
+  -- count-controls' TOPLEFT offset (negative, measured from the panel top);
+  -- those controls are 20px tall, plus a small bottom margin.
+  local panelHeight = -y + 20 + 16
+  if panelHeight < 220 then panelHeight = 220 end
+  safeFrameCall(panel, "SetHeight", panelHeight)
+
   return panel
 end
 
@@ -494,8 +508,10 @@ local function validRecipe(recipe)
   local madeMin = tonumber(recipe.madeMin)
   local madeMax = tonumber(recipe.madeMax) or madeMin
   if not madeMin or madeMin <= 0 or not madeMax or madeMax <= 0 then return false end
+  -- SB-107: cooldown is tri-state: nil (unknown), 0 (ready), >0 (on cooldown).
+  -- Unknown is a valid state; only a negative value is malformed.
   local cooldown = tonumber(recipe.cooldown)
-  if not cooldown or cooldown < 0 then return false end
+  if cooldown ~= nil and cooldown < 0 then return false end
   return true
 end
 
@@ -574,7 +590,14 @@ function Skilly.Recommend(mode, opts)
     return
   end
   if type(entries) ~= "table" or #entries == 0 then
-    Skilly.Print("No recipes qualify in " .. wanted .. " mode.")
+    local omitted = tonumber(snapshot.omittedAmbiguous) or 0
+    local recipeCount = type(snapshot.recipes) == "table" and #snapshot.recipes or 0
+    if omitted > 0 and recipeCount == 0 then
+      Skilly.Print("Reagent-choice data is unsupported: " .. omitted
+          .. " recipe(s) omitted for ambiguous reagent slots.")
+    else
+      Skilly.Print("No recipes qualify in " .. wanted .. " mode.")
+    end
     return
   end
 
@@ -709,8 +732,7 @@ local function resetSourceCaches()
 end
 
 Skilly.RegisterCommand("asif", function(arg)
-  local text = string.gsub(tostring(arg or ""), "^%s+", "")
-  text = string.gsub(text, "%s+$", "")
+  local text = trim(arg)
   local lower = string.lower(text)
 
   if lower == "" then
@@ -817,8 +839,7 @@ local function listPrices()
 end
 
 Skilly.RegisterCommand("prices", function(arg)
-  local text = string.gsub(tostring(arg or ""), "^%s+", "")
-  text = string.gsub(text, "%s+$", "")
+  local text = trim(arg)
   if text == "" then
     listPrices()
     return
@@ -903,7 +924,7 @@ local function helpFor(target)
 end
 
 Skilly.RegisterCommand("help", function(arg)
-  local target = string.lower(string.gsub(tostring(arg or ""), "^%s+(.-)%s*$", "%1"))
+  local target = string.lower(trim(arg))
   if target ~= "" then
     helpFor(target)
     return
@@ -981,7 +1002,7 @@ local function printBankState()
 end
 
 Skilly.RegisterCommand("bank", function(arg)
-  local text = string.lower(string.gsub(tostring(arg or ""), "^%s+(.-)%s*$", "%1"))
+  local text = string.lower(trim(arg))
   local bank = Skilly.Bank
   if text == "clear" then
     if type(bank) == "table" and type(bank.Clear) == "function" then
@@ -1072,6 +1093,7 @@ local function debugComparatorLine(entry, snapshot, mode, index)
       .. ", missingOwned=" .. tostring(missingOwned)
       .. ", learned=" .. tostring(recipe.learned)
       .. ", learnable=" .. tostring(recipe.learnable)
+      .. ", cooldown=" .. (tonumber(recipe.cooldown) ~= nil and tostring(recipe.cooldown) or "unknown")
 end
 
 local function printDebugEvidence(entry, snapshot, mode, index)
@@ -1251,6 +1273,11 @@ local function printDebugReport()
     return
   end
 
+  local omittedAmbiguous = tonumber(snapshot.omittedAmbiguous) or 0
+  if omittedAmbiguous > 0 then
+    Skilly.Print("omitted recipes (ambiguous reagent choice): " .. omittedAmbiguous)
+  end
+
   local okCheap, cheap = pcall(Skilly.Rank.Best, snapshot, "cheap")
   if okCheap and type(cheap) == "table" and cheap[1] then
     printDebugEntry(cheap[1], "on-hand winner", snapshot, "cheap", 1)
@@ -1384,7 +1411,7 @@ Skilly.RegisterCommand("export", exportFeedback, {
 })
 
 function Skilly.Command(msg)
-  msg = string.lower(string.gsub(tostring(msg or ""), "^%s+(.-)%s*$", "%1"))
+  msg = string.lower(trim(msg))
 
   if type(Skilly.InitDB) == "function" then
     pcall(Skilly.InitDB)

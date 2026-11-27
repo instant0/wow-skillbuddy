@@ -12,8 +12,9 @@ local MAX_COUNT = 10000
 local RECENT_WINDOW = 30
 
 -- In-memory only. A craft is identified by a CHAT_MSG_LOOT item, and its single
--- outcome is attributed to that recipe by the next CHAT_MSG_SKILL. A craft with
--- no skillup is recorded when the next craft starts or the old one expires.
+-- outcome is attributed to that recipe by the next CHAT_MSG_SKILL. A no-skillup
+-- attempt is attributed only when the next different recipe begins before the
+-- 30s timeout; an expired or otherwise ambiguous pending attempt is discarded.
 local pending = nil
 
 local function positiveInteger(value, minValue, maxValue)
@@ -41,7 +42,9 @@ local function nowStamp()
 end
 
 local function bucketFor(skill)
-  local n = positiveInteger(skill, 0, 10000) or 1
+  -- SB-102: clamp to the first 5-point bucket so skill 0 (and any sub-1 value)
+  -- yields a usable bucket (1) instead of -4.
+  local n = positiveInteger(skill, 1, 10000) or 1
   return math.floor((n - 1) / 5) * 5 + 1
 end
 

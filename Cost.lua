@@ -101,6 +101,16 @@ local function positiveCount(value)
   return math.floor(n)
 end
 
+-- SB-102: a throwing bank helper must never abort costing or advice.
+local function bankInfoSafe(includeBank)
+  if includeBank ~= true then return nil end
+  local bank = Skilly.Bank
+  if type(bank) ~= "table" or type(bank.Info) ~= "function" then return nil end
+  local ok, info = pcall(bank.Info, bank)
+  if not ok or type(info) ~= "table" then return nil end
+  return info
+end
+
 local function externalCountAllowed()
   return featureEnabled("useAltInventory", false)
 end
@@ -162,10 +172,9 @@ function Skilly.Cost.ItemCountInfo(reagent)
   if key == "" and itemID then key = "item:" .. itemID end
   if key == "" then return { count = 0 } end
 
-  local includeBank = SkillyDB and SkillyDB.includeBank == true
+  local includeBank = type(SkillyDB) == "table" and SkillyDB.includeBank == true
   local bank = Skilly.Bank
-  local bankInfo = includeBank and type(bank) == "table"
-      and type(bank.Info) == "function" and bank.Info() or nil
+  local bankInfo = bankInfoSafe(includeBank)
   local hasFreshBank = type(bankInfo) == "table" and bankInfo.fresh == true
   local allowExternal = externalCountAllowed()
 
@@ -208,11 +217,10 @@ function Skilly.Cost.ItemCount(reagent)
   if key == "" and itemID then key = "item:" .. itemID end
   if key == "" then return 0 end
 
-  local includeBank = SkillyDB and SkillyDB.includeBank == true
+  local includeBank = type(SkillyDB) == "table" and SkillyDB.includeBank == true
   local allowExternal = externalCountAllowed()
   local bank = Skilly.Bank
-  local bankInfo = includeBank and type(bank) == "table"
-      and type(bank.Info) == "function" and bank.Info() or nil
+  local bankInfo = bankInfoSafe(includeBank)
   local freshBank = type(bankInfo) == "table" and bankInfo.fresh == true
   -- SB-88: a stale bank cache and a fresh one must never share a count.
   local cacheKey = key .. ":" .. (freshBank and "B1" or "B0")
@@ -259,7 +267,7 @@ local function ownedForAvailability(reagent, key, required)
   return owned, asIf
 end
 
-local function analyzeReagents(recipe)
+local function analyzeReagents(recipe, allowMarket)
   local rows = {}
   local unknown = false
   local worst = "onHand"
@@ -286,7 +294,7 @@ local function analyzeReagents(recipe)
         local need = required - owned
         if need < 0 then need = 0 end
 
-        local price, source = Skilly.Cost.PriceFor(reagent)
+        local price, source = Skilly.Cost.PriceFor(reagent, allowMarket)
         price = tonumber(price)
         if not price or price < 0 then price = 0 end
         local reliable = hasReliablePrice(source)
@@ -325,8 +333,8 @@ end
 -- SB-54: full-material basis. Every required unit must have a reliable price,
 -- even when some units are already owned. Real owned counts stay in the rows so
 -- the output can explain why the two recommendations differ.
-local function fullMaterialRows(recipe)
-  local rows, unknown, worst = analyzeReagents(recipe)
+local function fullMaterialRows(recipe, allowMarket)
+  local rows, unknown, worst = analyzeReagents(recipe, allowMarket)
   if unknown or #rows == 0 then return nil end
 
   local full = {}
@@ -348,8 +356,8 @@ local function fullMaterialRows(recipe)
   return full, worst
 end
 
-function Skilly.Cost.FullMissing(recipe)
-  local rows, worst = fullMaterialRows(recipe)
+function Skilly.Cost.FullMissing(recipe, allowMarket)
+  local rows, worst = fullMaterialRows(recipe, allowMarket)
   if type(recipe) == "table" then
     if rows and type(worst) == "string" then recipe.sourceGrade = worst end
     if not rows then recipe.unknownReagent = true end
@@ -359,8 +367,9 @@ end
 
 -- SB-38: cheapest reliable price wins; the source only breaks exact ties.
 -- Manual prices are handled first so they always beat automatic candidates.
-function Skilly.Cost.PriceFor(reagent)
+function Skilly.Cost.PriceFor(reagent, allowMarket)
   if type(reagent) ~= "table" then return 1, "default" end
+  if allowMarket == nil then allowMarket = true end
 
   local key = Internal.ReagentKey(reagent)
   local link = reagent.link
@@ -397,15 +406,19 @@ function Skilly.Cost.PriceFor(reagent)
     for _, candidate in ipairs(Skilly.SourceCandidates("vendorPrice", key, link, itemID)) do
       consider(candidate.value, "vendor", 1)
     end
-    for _, candidate in ipairs(Skilly.SourceCandidates("price", key, link, itemID)) do
-      local label = candidate.name
-      local rank = 4
-      if label == "auctionator" or label == "auctioneer" then
-        rank = 2
-      elseif label == "tsm" then
-        rank = 3
+    -- SB-105: filter market/AH candidates before choosing the cheapest price,
+    -- so a disallowed market price cannot shadow a still-eligible vendor price.
+    if allowMarket then
+      for _, candidate in ipairs(Skilly.SourceCandidates("price", key, link, itemID)) do
+        local label = candidate.name
+        local rank = 4
+        if label == "auctionator" or label == "auctioneer" then
+          rank = 2
+        elseif label == "tsm" then
+          rank = 3
+        end
+        consider(candidate.value, label, rank)
       end
-      consider(candidate.value, label, rank)
     end
   end
 
@@ -415,8 +428,8 @@ end
 
 -- SB-39: same lookup plus confidence. "default" means no reliable price was
 -- found, so ranking must use a scarcity estimate instead of the copper value.
-function Skilly.Cost.PriceInfo(reagent)
-  local price, source = Skilly.Cost.PriceFor(reagent)
+function Skilly.Cost.PriceInfo(reagent, allowMarket)
+  local price, source = Skilly.Cost.PriceFor(reagent, allowMarket)
   return price, source, source ~= "default"
 end
 
@@ -433,9 +446,9 @@ function Skilly.Cost.OwnershipSummary(recipe)
     return summary
   end
   local limit = nil
-  local includeBank = SkillyDB and SkillyDB.includeBank == true
+  local includeBank = type(SkillyDB) == "table" and SkillyDB.includeBank == true
   local bank = Skilly.Bank
-  local bankInfo = includeBank and type(bank) == "table" and type(bank.Info) == "function" and bank.Info() or nil
+  local bankInfo = bankInfoSafe(includeBank)
   local hasFreshBank = type(bankInfo) == "table" and bankInfo.fresh == true
   for _, reagent in ipairs(recipe.reagents) do
     if type(reagent) ~= "table" then
@@ -516,6 +529,44 @@ local function purchaseSourceLabel(grades)
   return "vendor"
 end
 
+-- SB-98: total purchase spend for n complete crafts across every missing
+-- reagent line, accounting for already-owned partial stacks.
+local function purchaseSpend(reagents, n)
+  local total = 0
+  for _, r in ipairs(reagents) do
+    local units = n * r.required - r.owned
+    if units < 0 then units = 0 end
+    total = total + units * r.price
+  end
+  return total
+end
+
+-- SB-98: greatest complete-craft count whose combined purchase spend fits the
+-- wallet. The per-reagent one-wallet bound is only a search ceiling, never the
+-- reported answer.
+local function maxAffordableCrafts(reagents, money)
+  local ceiling = nil
+  for _, r in ipairs(reagents) do
+    if r.price and r.price > 0 then
+      local bound = math.floor((r.owned + math.floor(money / r.price)) / r.required)
+      if ceiling == nil or bound < ceiling then ceiling = bound end
+    end
+  end
+  if ceiling == nil then ceiling = 0 end
+  if ceiling < 0 then ceiling = 0 end
+
+  local lo, hi = 0, ceiling
+  while lo < hi do
+    local mid = math.floor((lo + hi + 1) / 2)
+    if purchaseSpend(reagents, mid) <= money then
+      lo = mid
+    else
+      hi = mid - 1
+    end
+  end
+  return lo
+end
+
 function Skilly.Cost.ProvenanceSummary(recipe)
   local summary = {
     self = 0, bank = 0, alts = 0, combined = 0, ah = 0,
@@ -528,10 +579,9 @@ function Skilly.Cost.ProvenanceSummary(recipe)
     return summary
   end
 
-  local includeBank = SkillyDB and SkillyDB.includeBank == true
+  local includeBank = type(SkillyDB) == "table" and SkillyDB.includeBank == true
   local bank = Skilly.Bank
-  local bankInfo = includeBank and type(bank) == "table"
-      and type(bank.Info) == "function" and bank.Info() or nil
+  local bankInfo = bankInfoSafe(includeBank)
   local hasFreshBank = type(bankInfo) == "table" and bankInfo.fresh == true
   summary.includeBank = includeBank
   summary.bankFresh = hasFreshBank
@@ -540,7 +590,9 @@ function Skilly.Cost.ProvenanceSummary(recipe)
   summary.money = availableMoney()
 
   local selfLimit, bankLimit, altsLimit, combinedLimit = nil, nil, nil, nil
-  local buyLimit, buyGrades = nil, {}
+  local buyGrades = {}
+  local buyReagents = {}
+  local buyBlocked = false
 
   for _, reagent in ipairs(recipe.reagents) do
     if type(reagent) ~= "table" then
@@ -576,19 +628,20 @@ function Skilly.Cost.ProvenanceSummary(recipe)
         end
 
         if summary.purchaseAllowed and need > 0 then
-          local price, source = Skilly.Cost.PriceFor(reagent)
+          local price, source = Skilly.Cost.PriceFor(reagent, summary.marketAllowed)
           price = tonumber(price)
           local grade = gradeForPrice(source)
           local canBuy = price and price > 0 and hasReliablePrice(source)
               and (grade ~= "market" or summary.marketAllowed)
           if canBuy then
             buyGrades[#buyGrades + 1] = grade
-            if summary.money then
-              local affordable = math.floor(summary.money / price)
-              if affordable > need then affordable = need end
-              local crafts = math.floor(affordable / need)
-              if buyLimit == nil or crafts < buyLimit then buyLimit = crafts end
-            end
+            buyReagents[#buyReagents + 1] = {
+              required = required,
+              owned = selfCount + bankCount + altCount + combinedCount,
+              price = price,
+            }
+          else
+            buyBlocked = true
           end
         end
       end
@@ -599,8 +652,20 @@ function Skilly.Cost.ProvenanceSummary(recipe)
   summary.bank = bankLimit or 0
   summary.alts = altsLimit or 0
   summary.combined = combinedLimit or 0
-  summary.ah = buyLimit or 0
-  summary.moneyBounded = summary.money ~= nil and buyLimit ~= nil
+
+  -- SB-98: one shared wallet across all missing reagent lines. A blocked
+  -- (unpriced/invalid/unpurchasable) missing reagent forbids claiming a
+  -- verified purchase-complete craft.
+  local purchaseCrafts = 0
+  local hasPurchase = false
+  if summary.purchaseAllowed and summary.money then
+    if #buyReagents > 0 or buyBlocked then hasPurchase = true end
+    if #buyReagents > 0 and not buyBlocked then
+      purchaseCrafts = maxAffordableCrafts(buyReagents, summary.money)
+    end
+  end
+  summary.ah = purchaseCrafts
+  summary.moneyBounded = summary.money ~= nil and hasPurchase
 
   local parts = { tostring(summary.self) .. " self" }
   if hasFreshBank then parts[#parts + 1] = tostring(summary.bank) .. " bank" end
@@ -609,9 +674,9 @@ function Skilly.Cost.ProvenanceSummary(recipe)
   elseif summary.altsAllowed then
     parts[#parts + 1] = tostring(summary.alts) .. " alts"
   end
-  if summary.purchaseAllowed and summary.money then
-    local suffix = summary.unknown > 0
-        and " (money-bounded, partial)" or " (money-bounded)"
+  if hasPurchase then
+    local partial = summary.unknown > 0 or buyBlocked
+    local suffix = partial and " (money-bounded, partial)" or " (money-bounded)"
     parts[#parts + 1] = tostring(summary.ah) .. " "
         .. purchaseSourceLabel(buyGrades) .. suffix
   end
@@ -621,7 +686,7 @@ end
 
 -- SB-88: only a reliable missing-unit price enters the literal out-of-pocket
 -- total. The 1-copper fallback stays visible as an estimate.
-function Skilly.Cost.Recipe(recipe)
+function Skilly.Cost.Recipe(recipe, allowMarket)
   local result = {
     total = 0, fullCost = 0, estimatedCost = 0, estimated = 0, detail = {},
   }
@@ -640,7 +705,7 @@ function Skilly.Cost.Recipe(recipe)
       local need = required - owned
       if need < 0 then need = 0 end
 
-      local price, source = Skilly.Cost.PriceFor(reagent)
+      local price, source = Skilly.Cost.PriceFor(reagent, allowMarket)
       price = tonumber(price) or 1
       if price < 0 then price = 0 end
       local reliable = hasReliablePrice(source)
@@ -707,8 +772,8 @@ end
 
 -- SB-12/SB-46: only reagents with a real shortfall are "missing"; sourceGrade
 -- summarizes the whole recipe so SB-13 can prefer vendor/on-hand materials.
-function Skilly.Cost.Missing(recipe)
-  local rows, unknown, worst = analyzeReagents(recipe)
+function Skilly.Cost.Missing(recipe, allowMarket)
+  local rows, unknown, worst = analyzeReagents(recipe, allowMarket)
   if type(recipe) == "table" then
     recipe.sourceGrade = worst
     if unknown then recipe.unknownReagent = true end
@@ -723,8 +788,8 @@ end
 
 -- SB-12: on-hand, as-if, and purchasable-with-a-real-price all count when the
 -- assumePurchasable setting is on. A fallback price of 1 never counts.
-function Skilly.Cost.Obtainable(recipe)
-  local rows, unknown, worst = analyzeReagents(recipe)
+function Skilly.Cost.Obtainable(recipe, allowMarket)
+  local rows, unknown, worst = analyzeReagents(recipe, allowMarket)
   if type(recipe) == "table" then
     recipe.sourceGrade = worst
     if unknown then recipe.unknownReagent = true end
@@ -732,7 +797,7 @@ function Skilly.Cost.Obtainable(recipe)
   if unknown or #rows == 0 then return false end
 
   local assume = Skilly.Cost.AssumePurchasable()
-  local allowMarket = featureEnabled("allowAHMaterials", true)
+  if allowMarket == nil then allowMarket = true end
   for _, row in ipairs(rows) do
     if row.need > 0 and (not assume or not row.hasPrice) then
       return false

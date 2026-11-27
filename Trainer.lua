@@ -357,15 +357,21 @@ local function onTrainerEvent(_, event)
   if not Internal.TrainerWindowOpen() then return end
   if Internal.TrainerServiceCount() < 1 then return end
 
-  local now = Internal.CallNumber(_G.GetTime) or 0
-  if lastCapture and (now - lastCapture) < 1 then return end
+  -- SB-102: throttle only on a finite positive clock; a missing/garbage clock
+  -- must not fabricate a timestamp or suppress later captures.
+  local now = Internal.CallNumber(_G.GetTime)
+  if type(now) ~= "number" or now <= 0 or now ~= now
+      or now == math.huge or now == -math.huge then
+    now = nil
+  end
+  if now and lastCapture and (now - lastCapture) < 1 then return end
 
   local ok, added, refreshed = pcall(Skilly.Trainer.Capture, true)
   if not ok then
     Skilly.Print("Trainer capture failed: " .. tostring(added))
     return
   end
-  if (tonumber(added) or 0) + (tonumber(refreshed) or 0) > 0 then
+  if now and (tonumber(added) or 0) + (tonumber(refreshed) or 0) > 0 then
     lastCapture = now
   end
 end

@@ -241,7 +241,7 @@ end
 
 -- SB-39: ranking cost. Known prices stay literal; unknown prices get a
 -- scarcity estimate so rare materials no longer look like 1 copper.
-function Skilly.Rank.EffectiveCost(recipe)
+function Skilly.Rank.EffectiveCost(recipe, allowMarket)
   local info = { effectiveCost = 0, knownCost = 0, estimatedCost = 0, reagents = {} }
   if type(recipe) ~= "table" then return info end
 
@@ -256,7 +256,7 @@ function Skilly.Rank.EffectiveCost(recipe)
         local need = required - owned
         if need < 0 then need = 0 end
 
-        local price, source, known = Skilly.Cost.PriceInfo(reagent)
+        local price, source, known = Skilly.Cost.PriceInfo(reagent, allowMarket)
         local unitCost, costKind, pressure = price, "known", nil
         if not known then
           if featureEnabled("useScarcity", true) then
@@ -313,8 +313,8 @@ end
 -- override lets SB-48's bounded observation change the denominator without
 -- changing the reported color probability. With no override this is identical
 -- to effectiveCost / p, so existing callers are unaffected.
-function Skilly.Rank.Score(recipe, skill, maxSkill, craftsPerPoint)
-  local info = Skilly.Rank.EffectiveCost(recipe)
+function Skilly.Rank.Score(recipe, skill, maxSkill, craftsPerPoint, allowMarket)
+  local info = Skilly.Rank.EffectiveCost(recipe, allowMarket)
   local probability = Skilly.Rank.Probability(recipe, skill, maxSkill)
   info.probability = probability
   if not probability or probability <= 0 then return math.huge, info end
@@ -331,7 +331,7 @@ end
 -- SB-54: full-material ranking cost. Unlike EffectiveCost, this prices every
 -- required unit and refuses to guess when any required reagent has no reliable
 -- price. Owned stock is reported, not credited.
-function Skilly.Rank.FullEffectiveCost(recipe)
+function Skilly.Rank.FullEffectiveCost(recipe, allowMarket)
   local info = {
     effectiveCost = 0, knownCost = 0, estimatedCost = 0,
     reagents = {}, invalid = false,
@@ -341,7 +341,7 @@ function Skilly.Rank.FullEffectiveCost(recipe)
   -- means no full-basis result, never a call to an undefined local function.
   local rows
   if type(Skilly.Cost.FullMissing) == "function" then
-    rows = Skilly.Cost.FullMissing(recipe)
+    rows = Skilly.Cost.FullMissing(recipe, allowMarket)
   end
   if type(rows) ~= "table" or #rows == 0 then
     info.invalid = true
@@ -376,8 +376,8 @@ end
 
 -- SB-54: cost per expected skill point on the full-material basis. Uses the
 -- same observed/color denominator as Score so only the cost basis changes.
-function Skilly.Rank.FullScore(recipe, skill, maxSkill, craftsPerPoint)
-  local info = Skilly.Rank.FullEffectiveCost(recipe)
+function Skilly.Rank.FullScore(recipe, skill, maxSkill, craftsPerPoint, allowMarket)
+  local info = Skilly.Rank.FullEffectiveCost(recipe, allowMarket)
   local probability = Skilly.Rank.Probability(recipe, skill, maxSkill)
   info.probability = probability
   if info.invalid or not probability or probability <= 0 then
@@ -511,6 +511,10 @@ function Skilly.Rank.Best(snapshot, mode, costBasis)
   local maxSkill = tonumber(snapshot.maxSkill) or 0
   local cheap = mode ~= "best"
   local allowAH = ahMaterialsAllowed()
+  -- SB-105: one explicit pricing context for the cheap path. Best mode stays
+  -- availability-independent (always allows market prices); cheap mode filters
+  -- market prices when allowAHMaterials is off.
+  local allowMarket = (not cheap) or allowAH
 
   local db = type(SkillyDB) == "table" and SkillyDB or nil
   local ignored = db and type(db.ignored) == "table" and db.ignored or nil
@@ -533,7 +537,7 @@ function Skilly.Rank.Best(snapshot, mode, costBasis)
 
         if not skip and cheap then
           if type(Skilly.Cost.Obtainable) ~= "function"
-              or Skilly.Cost.Obtainable(recipe) ~= true then
+              or Skilly.Cost.Obtainable(recipe, allowMarket) ~= true then
             skip = true
           end
         end
@@ -541,7 +545,7 @@ function Skilly.Rank.Best(snapshot, mode, costBasis)
         local fullRows = nil
         if not skip and full then
           if type(Skilly.Cost.FullMissing) == "function" then
-            fullRows = Skilly.Cost.FullMissing(recipe)
+            fullRows = Skilly.Cost.FullMissing(recipe, allowMarket)
           end
           if type(fullRows) ~= "table" or #fullRows == 0 then skip = true end
         end
@@ -549,7 +553,7 @@ function Skilly.Rank.Best(snapshot, mode, costBasis)
         if not skip then
           local missing = fullRows or {}
           if not full and type(Skilly.Cost.Missing) == "function" then
-            local rows = Skilly.Cost.Missing(recipe)
+            local rows = Skilly.Cost.Missing(recipe, allowMarket)
             if type(rows) == "table" then missing = rows end
           end
           local grade = type(recipe.sourceGrade) == "string"
@@ -561,7 +565,7 @@ function Skilly.Rank.Best(snapshot, mode, costBasis)
           if not skip then
             local costInfo = {}
             if type(Skilly.Cost.Recipe) == "function" then
-              local info = Skilly.Cost.Recipe(recipe)
+              local info = Skilly.Cost.Recipe(recipe, allowMarket)
               if type(info) == "table" then costInfo = info end
             end
             local craftable = 0
@@ -584,7 +588,7 @@ function Skilly.Rank.Best(snapshot, mode, costBasis)
             if full then
               if type(Skilly.Rank.FullScore) == "function" then
                 local value, details = Skilly.Rank.FullScore(
-                    recipe, skill, maxSkill, override)
+                    recipe, skill, maxSkill, override, allowMarket)
                 score = tonumber(value) or math.huge
                 if type(details) == "table" then info = details end
               end
@@ -594,7 +598,7 @@ function Skilly.Rank.Best(snapshot, mode, costBasis)
                 score = (tonumber(costInfo.fullCost) or 0) * crafts
               end
             elseif type(Skilly.Rank.Score) == "function" then
-              local value, details = Skilly.Rank.Score(recipe, skill, maxSkill, override)
+              local value, details = Skilly.Rank.Score(recipe, skill, maxSkill, override, allowMarket)
               score = tonumber(value) or math.huge
               if type(details) == "table" then info = details end
             end
@@ -625,8 +629,12 @@ function Skilly.Rank.Best(snapshot, mode, costBasis)
               cost = full and fullCost or outOfPocket,
               fullCost = fullCost,
               outOfPocketCost = outOfPocket,
-              estimatedCost = tonumber(costInfo.estimatedCost) or 0,
-              estimatedReagents = tonumber(costInfo.estimated) or 0,
+              -- SB-99: the cheap comparator basis and estimate data come from
+              -- Rank.EffectiveCost's result, not Cost.Recipe's copper fallback.
+              effectiveCost = tonumber(info.effectiveCost) or 0,
+              knownCost = tonumber(info.knownCost) or 0,
+              estimatedCost = tonumber(info.estimatedCost) or 0,
+              estimatedReagents = tonumber(info.estimatedReagents) or 0,
               costBasis = full and "full" or "onHand",
               craftable = full and 0 or craftable,
               missing = missing,
@@ -928,32 +936,47 @@ function Skilly.Rank.Describe(entry)
     parts[#parts + 1] = "~" .. formatCount(points) .. " skill points"
   end
 
-  local cost = tonumber(entry.cost) or 0
   local denominator = tonumber(entry.expectedDenominator) or crafts
   if denominator <= 0 then denominator = crafts end
-  if cost > 0 then
-    parts[#parts + 1] = formatMoney(cost * denominator) .. " per expected point"
+
+  if entry.costBasis == "full" then
+    -- Full-material basis is literal copper for every required unit.
+    local cost = tonumber(entry.cost) or 0
+    if cost > 0 then
+      parts[#parts + 1] = formatMoney(cost * denominator) .. " per expected point"
+    else
+      parts[#parts + 1] = "free per expected point"
+    end
   else
-    parts[#parts + 1] = "free per expected point"
+    -- SB-99: the cheap comparator basis is Rank.EffectiveCost (known copper
+    -- plus scarcity-pressure units), shown as a ranking score, never currency.
+    local effectiveCost = tonumber(entry.effectiveCost) or 0
+    local weighted = featureEnabled("useProbability", true)
+    local perUnit = weighted and "per expected point" or "per craft"
+    parts[#parts + 1] = "ranking score " .. formatCount(effectiveCost * denominator)
+        .. " " .. perUnit
   end
-  local outOfPocket = tonumber(entry.outOfPocketCost) or cost
+
+  local outOfPocket = tonumber(entry.outOfPocketCost) or 0
   if outOfPocket < 0 then outOfPocket = 0 end
   parts[#parts + 1] = "out-of-pocket " .. formatMoney(outOfPocket)
+
   local estimatedCost = tonumber(entry.estimatedCost) or 0
   local estimatedReagents = tonumber(entry.estimatedReagents) or 0
   if estimatedCost > 0 or estimatedReagents > 0 then
     parts[#parts + 1] = tostring(estimatedReagents) .. " unpriced "
         .. (estimatedReagents == 1 and "material" or "materials")
-        .. " (" .. formatMoney(estimatedCost) .. " estimate, excluded)"
+        .. " (" .. formatCount(estimatedCost) .. " ranking-score estimate, excluded)"
   end
 
   local craftable = tonumber(entry.craftable) or 0
+  local ownership = "your materials"
+  if craftable > 0 and type(Skilly.Cost) == "table"
+      and type(Skilly.Cost.OwnershipLabel) == "function" then
+    local okOwn, label = pcall(Skilly.Cost.OwnershipLabel, recipe)
+    if okOwn and type(label) == "string" and label ~= "" then ownership = label end
+  end
   if craftable > 0 then
-    local ownership = "your materials"
-    if type(Skilly.Cost) == "table" and type(Skilly.Cost.OwnershipLabel) == "function" then
-      local okOwn, label = pcall(Skilly.Cost.OwnershipLabel, recipe)
-      if okOwn and type(label) == "string" and label ~= "" then ownership = label end
-    end
     parts[#parts + 1] = "materials: " .. formatCount(craftable)
         .. (recipe.learnable and (" craftable after learning (" .. ownership .. ")")
             or (" craftable with " .. ownership))
@@ -984,11 +1007,18 @@ function Skilly.Rank.Describe(entry)
     end
   end
 
+  -- SB-107: an unavailable cooldown signal must not read as "ready".
+  if tonumber(recipe.cooldown) == nil then
+    parts[#parts + 1] = "cooldown: unknown"
+  end
+
   local reason
   if recipe.learnable then
     reason = "unlock available at current skill"
   elseif craftable > 0 then
-    reason = "materials on hand"
+    -- SB-99: derive from the ownership label so alt/combined external stock is
+    -- never described as "on hand".
+    reason = ownership
   elseif type(entry.missing) == "table" and #entry.missing > 0 then
     reason = "missing materials priced"
   else

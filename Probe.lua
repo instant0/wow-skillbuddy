@@ -211,9 +211,20 @@ local function probeTrainer()
   end
 
   Skilly.Print("trainer window open - reading up to 5 sample rows")
-  local serviceCount = Internal.TrainerServiceCount()
-  if serviceCount < 1 then serviceCount = 1 end
+  -- SB-102: distinguish a valid zero (or positive) count from a missing/throwing/
+  -- malformed one; a real zero makes no service-row calls.
+  local countResults = Internal.CallResults(_G.GetNumTrainerServices)
+  local serviceCount = nil
+  if countResults then
+    local raw = tonumber(countResults[1])
+    if raw and raw >= 0 and raw == math.floor(raw) then serviceCount = math.floor(raw) end
+  end
+  if serviceCount == nil then
+    Skilly.Print("GetNumTrainerServices() = unavailable")
+    return
+  end
   Skilly.Print("GetNumTrainerServices() = " .. serviceCount)
+  if serviceCount < 1 then return end
 
   for i = 1, math.min(serviceCount, 5) do
     callAndDescribe("GetTrainerServiceInfo(" .. i .. ")", _G.GetTrainerServiceInfo, i)

@@ -69,8 +69,10 @@ these development files are shipped.
   Thresholds come from the pinned game-data table, then band estimates.
   Partial/missing prices use scarcity estimates (tier, ease, rarity,
   cross-skill). Known prices stay literal; `fullCost` is never polluted with
-  estimates. Equal-color recipes rank by out-of-pocket cost per expected point
-  plus acquisition grade. Any crafts-per-point observation stays bounded and
+  estimates. Equal-color recipes rank by a scarcity-weighted ranking score
+  (`Rank.EffectiveCost`) per expected point (or per craft when probability
+  weighting is off); literal out-of-pocket money is shown separately and is not
+  the comparator basis. Any crafts-per-point observation stays bounded and
   never overrides orange or gray.
 - **Scope.** WoW Forever 1.60.1 only. No Ace3, no embedded libs, no generated
   tables copied from other addons. Bundled data is independently derived from

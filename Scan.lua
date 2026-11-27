@@ -125,8 +125,9 @@ end
 
 local function reagentsFromSchematic(schematic)
   local reagents = {}
+  local ambiguous = false
   local slots = type(schematic) == "table" and schematic.reagentSlotSchematics or nil
-  if type(slots) ~= "table" then return reagents end
+  if type(slots) ~= "table" then return reagents, ambiguous end
 
   for _, slot in ipairs(slots) do
     if type(slot) == "table" then
@@ -138,26 +139,36 @@ local function reagentsFromSchematic(schematic)
           and (reagentType == nil or reagentType == 1)
       if include then
         local count = positiveInteger(slot.quantityRequired, 0)
-        if count > 0 and type(slot.reagents) == "table" then
-          for _, reagent in ipairs(slot.reagents) do
-            if type(reagent) == "table" then
-              local identity = itemIdentity(reagent.itemID)
-              if identity then
-                reagents[#reagents + 1] = {
-                  name = identity.name,
-                  key = identity.key,
-                  link = identity.link,
-                  itemID = identity.itemID,
-                  count = count,
-                }
+        if count > 0 then
+          -- SB-106: a required basic slot must have exactly one valid candidate.
+          -- Zero, malformed, or multiple candidates are ambiguous: skip the
+          -- recipe rather than guessing a choice or charging all as required.
+          local candidates = {}
+          if type(slot.reagents) == "table" then
+            for _, reagent in ipairs(slot.reagents) do
+              if type(reagent) == "table" then
+                local identity = itemIdentity(reagent.itemID)
+                if identity then candidates[#candidates + 1] = identity end
               end
             end
+          end
+          if #candidates == 1 then
+            local identity = candidates[1]
+            reagents[#reagents + 1] = {
+              name = identity.name,
+              key = identity.key,
+              link = identity.link,
+              itemID = identity.itemID,
+              count = count,
+            }
+          else
+            ambiguous = true
           end
         end
       end
     end
   end
-  return reagents
+  return reagents, ambiguous
 end
 
 local function recipeBelongsToProfession(capi, profession, recipeID)
@@ -254,6 +265,7 @@ local function scanCurrentModern()
     skill = tonumber(profession.skillLevel) or 0,
     maxSkill = tonumber(profession.maxSkillLevel) or 0,
     recipes = {},
+    omittedAmbiguous = 0,
   }
 
   for _, recipeID in ipairs(recipeIDs) do
@@ -265,7 +277,10 @@ local function scanCurrentModern()
         if info.learned == false then
           learnRow = trainerLearnRow(recipeID, snapshot.skill, snapshot.profession)
         end
-        local include = (info.learned ~= false or learnRow ~= nil)
+        -- SB-101: include only a definitively learned recipe, or an unlearned
+        -- recipe a valid trainer capture proves learnable at the current skill.
+        -- Missing/wrong-type learned state is skipped, never coerced.
+        local include = (info.learned == true or (info.learned == false and learnRow ~= nil))
             and info.disabled ~= true and info.isDummyRecipe ~= true
         if include then
           local difficulty = difficultyFromRelative(info.relativeDifficulty)
@@ -273,8 +288,8 @@ local function scanCurrentModern()
             local schematicResults = Internal.CallResults(capi.GetRecipeSchematic, recipeID, false)
             local schematic = schematicResults and schematicResults[1] or nil
             if type(schematic) == "table" then
-              local reagents = reagentsFromSchematic(schematic)
-              if #reagents > 0 then
+              local reagents, ambiguous = reagentsFromSchematic(schematic)
+              if not ambiguous and #reagents > 0 then
                 local outputID = positiveInteger(schematic.outputItemID, nil)
                 local link = nil
                 if type(capi.GetRecipeOutputItemData) == "function" then
@@ -305,12 +320,16 @@ local function scanCurrentModern()
                   reagents = reagents,
                   madeMin = madeMin,
                   madeMax = positiveInteger(schematic.quantityMax, madeMin),
-                  cooldown = 0,
+                  -- SB-107: Forever's GetRecipeInfo exposes no reliable cooldown
+                  -- field, so the state is unknown (nil), never a fabricated "ready" (0).
+                  cooldown = nil,
                   itemID = outputID,
                   learned = info.learned == true,
                   learnable = learnRow ~= nil,
                   learnRequired = learnRow and learnRow.skillRequired or nil,
                 }
+              elseif ambiguous then
+                snapshot.omittedAmbiguous = snapshot.omittedAmbiguous + 1
               end
             end
           end
