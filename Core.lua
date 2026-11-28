@@ -151,11 +151,78 @@ function Skilly.OutputLog()
   return copy
 end
 
+-- SB-56: central colour formatting. Pure Lua string ops; the client's recipe
+-- colour remains authoritative for probability/ranking (see Rank.lua). The
+-- export log stores stripped text so /skilly export stays plain.
+local COLOUR_DIGITS = "0123456789abcdef"
+local function colourByte(v)
+  if type(v) ~= "number" then return "FF" end
+  if v < 0 then v = 0 elseif v > 1 then v = 1 end
+  local n = math.floor(v * 255 + 0.5)
+  return COLOUR_DIGITS:sub(math.floor(n / 16) + 1, math.floor(n / 16) + 1)
+      .. COLOUR_DIGITS:sub(n % 16 + 1, n % 16 + 1)
+end
+
+function Skilly.Colour(r, g, b, text)
+  if type(text) ~= "string" then
+    local ok, s = pcall(tostring, text)
+    text = (ok and s) or ""
+  end
+  if type(r) ~= "number" or type(g) ~= "number" or type(b) ~= "number" then
+    return text
+  end
+  return "|cff" .. colourByte(r) .. colourByte(g) .. colourByte(b) .. text .. "|r"
+end
+
+function Skilly.StripColour(text)
+  if type(text) ~= "string" then
+    local ok, s = pcall(tostring, text)
+    if not ok or type(s) ~= "string" then return "<unprintable>" end
+    text = s
+  end
+  text = string.gsub(text, "|c%x%x%x%x%x%x%x%x", "")
+  text = string.gsub(text, "|r", "")
+  return text
+end
+
+-- SB-56: calm gold accent for headings, kept separate from the difficulty
+-- colour used on recipe names so it never overrides or infers recipe colour.
+function Skilly.Section(text)
+  return Skilly.Colour(1.0, 0.82, 0.0, text)
+end
+
+-- SB-56: difficulty-name -> (r,g,b) for colouring recipe names by the client's
+-- live colour. Display-only; Skilly.Difficulty.Detect stays the single source
+-- for probability/ranking, and "unknown" maps to nil (no colour).
+Skilly.DifficultyColour = {
+  orange = { 1.0, 0.5, 0.0 },
+  yellow = { 1.0, 1.0, 0.0 },
+  green = { 0.0, 1.0, 0.0 },
+  gray = { 0.5, 0.5, 0.5 },
+}
+
+-- SB-110: public money formatter for compact panel rows (g/s/c, trailing zeros
+-- dropped: "1g20s" not "1g20s0c"). Shared so the panel does not duplicate a
+-- local formatter.
+function Skilly.FormatCopper(value)
+  local amount = math.floor(tonumber(value) or 0)
+  if amount < 0 then amount = 0 end
+  local gold = math.floor(amount / 10000)
+  local silver = math.floor((amount % 10000) / 100)
+  local copper = amount % 100
+  local parts = {}
+  if gold > 0 then parts[#parts + 1] = gold .. "g" end
+  if silver > 0 or gold > 0 then parts[#parts + 1] = silver .. "s" end
+  if copper > 0 or (gold == 0 and silver == 0) then parts[#parts + 1] = copper .. "c" end
+  return table.concat(parts)
+end
+
 function Skilly.Print(message)
   local okLine, line = pcall(tostring, message)
   if not okLine or type(line) ~= "string" then line = "<unprintable>" end
 
-  outputLog[#outputLog + 1] = line
+  -- SB-56: keep the export log colour-free; send the coloured line to chat.
+  outputLog[#outputLog + 1] = Skilly.StripColour(line)
   if #outputLog > MAX_OUTPUT_LINES then table.remove(outputLog, 1) end
 
   local frame = _G.DEFAULT_CHAT_FRAME
@@ -336,6 +403,9 @@ Skilly.Features = {
   { key = "showFullCostRecommendation", default = true, category = "Output",
     label = "Full-material-cost winner",
     tooltip = "Show the separate full-material-cost recommendation." },
+  { key = "useColouredOutput", default = true, category = "Output",
+    label = "Coloured chat output",
+    tooltip = "Colour recipe names by live difficulty and headings with an accent. /skilly export stays plain text either way." },
 
   { key = "useCompanionAnchor", default = false, category = "Window",
     label = "Anchor to Professions window",

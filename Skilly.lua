@@ -4,7 +4,7 @@
 ------------------------------------------------------------------------------------]]
 
 Skilly = Skilly or {}
-Skilly.version = "0.4.18"
+Skilly.version = "0.4.24"
 
 BINDING_HEADER_SKILLY = "Skilly"
 BINDING_NAME_SKILLY_NEXT_CRAFT = "Next craft"
@@ -629,12 +629,12 @@ function Skilly.Recommend(mode, opts)
   local groupFor = type(Skilly.UI.GroupFor) == "function" and Skilly.UI.GroupFor or nil
   local titles = type(Skilly.UI.GroupTitles) == "table" and Skilly.UI.GroupTitles or {}
   local lastGroup = nil
-  Skilly.Print("Skilly recommendations:")
+  Skilly.Print(section("Skilly recommendations:"))
   for i = 1, math.min(#entries, maxLines) do
     local entry = entries[i]
     local group = groupFor and groupFor(entry) or "other"
     if group ~= lastGroup then
-      Skilly.Print(titles[group] or titles.other or "Other recommendations")
+      Skilly.Print(section(titles[group] or titles.other or "Other recommendations"))
       lastGroup = group
     end
     local okDescribe, line = pcall(Skilly.Rank.Describe, entry)
@@ -1040,6 +1040,16 @@ end, {
   usage = "/skilly bank [clear]",
   description = "Capture bank reagent cache when open, report age when closed, or clear it.",
 })
+
+-- SB-56: heading accent, safe fallback to plain text if colouring is disabled
+-- or unavailable. Recipe names are coloured inside Rank.Describe.
+local function section(text)
+  if type(Skilly.Section) == "function" then
+    local ok, s = pcall(Skilly.Section, text)
+    if ok and type(s) == "string" and s ~= "" then return s end
+  end
+  return text
+end
 
 -- SB-52: factual, copyable evidence for feedback. It never changes ranking.
 local function debugComparatorLine(entry, snapshot, mode, index)

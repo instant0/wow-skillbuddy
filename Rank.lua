@@ -892,6 +892,7 @@ function Skilly.Rank.Describe(entry)
   if crafts < 1 then crafts = 1 end
 
   local color = "Unknown"
+  local difficultyKey = "unknown"
   local detect = Skilly.Difficulty and Skilly.Difficulty.Detect
   if type(detect) == "function" then
     local ok, info = pcall(detect, recipe.difficulty)
@@ -900,6 +901,7 @@ function Skilly.Rank.Describe(entry)
         orange = "Orange", yellow = "Yellow", green = "Green", gray = "Gray",
       }
       color = known[info.color] or "Unknown"
+      difficultyKey = info.color
     end
   end
 
@@ -1031,7 +1033,19 @@ function Skilly.Rank.Describe(entry)
   local resale = Skilly.Rank.ResaleWarning(entry)
   if resale then parts[#parts + 1] = resale end
 
-  return name .. ": " .. table.concat(parts, ", ") .. "."
+  -- SB-56: colour the recipe name with the live difficulty colour. Words and
+  -- ordering are unchanged; Skilly.Print strips the codes from the export log.
+  local shownName = name
+  if featureEnabled("useColouredOutput", true)
+      and type(Skilly.Colour) == "function"
+      and type(Skilly.DifficultyColour) == "table" then
+    local rgb = Skilly.DifficultyColour[difficultyKey]
+    if type(rgb) == "table" then
+      shownName = Skilly.Colour(rgb[1], rgb[2], rgb[3], name)
+    end
+  end
+
+  return shownName .. ": " .. table.concat(parts, ", ") .. "."
 end
 
 -- SB-48: unlock hints are a separate line and only come from a live trainer

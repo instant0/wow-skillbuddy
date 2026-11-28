@@ -41,6 +41,14 @@ local function createFontString(parent, name, font)
   return nil
 end
 
+local function createTexture(parent, name)
+  local okFn, factory = pcall(function() return parent.CreateTexture end)
+  if not okFn or type(factory) ~= "function" then return nil end
+  local ok, tex = pcall(factory, parent, name, "ARTWORK")
+  if ok then return tex end
+  return nil
+end
+
 local function runRecommend()
   if type(Skilly.InitDB) == "function" then pcall(Skilly.InitDB) end
   local recommend = Skilly.Recommend
@@ -82,6 +90,33 @@ local function safeRecipeID(entry)
   local id = tonumber(r.spellID or r.recipeID or r.id)
   if not id or id <= 0 or id ~= math.floor(id) then return nil end
   return math.floor(id)
+end
+
+-- SB-65: safely select/preview a recipe in the Professions UI. Never casts or
+-- buys; OpenRecipe only highlights so the player makes the final craft click.
+local function selectRecipe(entry)
+  local recipeID = safeRecipeID(entry)
+  if not recipeID then return false end
+  local api = _G.C_TradeSkillUI
+  if type(api) ~= "table" or type(api.OpenRecipe) ~= "function" then return false end
+  local ok = pcall(api.OpenRecipe, recipeID)
+  return ok == true
+end
+
+-- SB-65: write one feature flag the same way the settings panel does, so inline
+-- toggles and the settings UI stay in sync and the source cache resets.
+local function setFeatureFlag(key, value)
+  if type(key) ~= "string" or key == "" then return end
+  if type(SkillyDB) ~= "table" then SkillyDB = {} end
+  if type(SkillyDB.features) ~= "table" then SkillyDB.features = {} end
+  SkillyDB.features[key] = (value == true)
+  if type(Skilly.ResetSourceCache) == "function" then pcall(Skilly.ResetSourceCache) end
+end
+
+local function featureOn(key, default)
+  if type(Skilly.FeatureEnabled) ~= "function" then return default == true end
+  local ok, value = pcall(Skilly.FeatureEnabled, key, default)
+  return ok and value == true
 end
 
 local lastRecommendationSignature = nil
@@ -126,6 +161,16 @@ end
 Skilly.UI.GroupFor = resultGroup
 Skilly.UI.GroupTitles = RESULT_GROUP_TITLES
 
+-- SB-56: heading accent, safe fallback to plain text if colouring is disabled
+-- or unavailable. Recipe names are coloured inside Rank.Describe.
+local function section(text)
+  if type(Skilly.Section) == "function" then
+    local ok, s = pcall(Skilly.Section, text)
+    if ok and type(s) == "string" and s ~= "" then return s end
+  end
+  return text
+end
+
 local function printGroupedChatEntries(entries, maxLines)
   local lastGroup = nil
   local shown = 0
@@ -133,7 +178,7 @@ local function printGroupedChatEntries(entries, maxLines)
     local entry = entries[i]
     local group = resultGroup(entry)
     if group ~= lastGroup then
-      Skilly.Print(RESULT_GROUP_TITLES[group] or RESULT_GROUP_TITLES.other)
+      Skilly.Print(section(RESULT_GROUP_TITLES[group] or RESULT_GROUP_TITLES.other))
       lastGroup = group
     end
     local ok, line = pcall(Skilly.Rank.Describe, entry)
@@ -196,7 +241,7 @@ function Skilly.UI.PrintResults(entries, fullEntries, opts)
   local maxLines = math.floor(resultCount)
   if maxLines < 1 then maxLines = 1 elseif maxLines > 10 then maxLines = 10 end
 
-  Skilly.Print("Skilly recommendations:")
+  Skilly.Print(section("Skilly recommendations:"))
   printGroupedChatEntries(entries, maxLines)
 
   local fullTop = type(fullEntries) == "table" and fullEntries[1] or nil
@@ -229,6 +274,12 @@ local RESULTS_MAX_ROWS = 10
 local resultsFrame = nil
 local resultsBuildFailed = false
 local resultsRows = {}
+local craftNextButton = nil
+local toggleAHButton = nil
+local toggleAltsButton = nil
+-- SB-110: forward-declared so the row OnEnter/OnLeave handlers (created in
+-- buildResultsFrame) can capture them before their definitions below.
+local showRowTooltip, hideRowTooltip
 local lastEntries = nil
 local inSpecialFrames = false
 local resultsDefaultPoint = { point = "CENTER", rel = "UIParent", relPoint = "CENTER", x = 0, y = 0 }
@@ -358,8 +409,11 @@ end
 
 local function companionAnchorEnabled()
   if type(Skilly.FeatureEnabled) ~= "function" then return false end
-  local ok, value = pcall(Skilly.FeatureEnabled, "useCompanionAnchor", false)
-  return ok and value == true
+  -- SB-65: dock the panel into the Professions frame when either the explicit
+  -- companion anchor or the sidebar tab is enabled.
+  local okA, a = pcall(Skilly.FeatureEnabled, "useCompanionAnchor", false)
+  local okB, b = pcall(Skilly.FeatureEnabled, "useSidebarTab", false)
+  return (okA and a == true) or (okB and b == true)
 end
 
 local function professionsFrameVisible()
@@ -395,14 +449,22 @@ local function applyResultsLayout()
   if not resultsFrame then return end
   local enabled = companionAnchorEnabled()
   local prof = enabled and professionsFrameVisible() or nil
-  local anchorTarget, offsetX = anchorTargetForProfessionsFrame(prof)
+  local _, offsetX = anchorTargetForProfessionsFrame(prof)
   local anchored = prof ~= nil
+
+  -- SB-65: dock the panel as a child of the Professions frame when anchored, so
+  -- it moves/hides with the trade-skill window; otherwise float on UIParent.
+  if anchored and prof then
+    callMethod(resultsFrame, "SetParent", prof)
+  else
+    callMethod(resultsFrame, "SetParent", _G.UIParent)
+  end
 
   pcall(function() resultsFrame:SetWidth(RESULTS_FRAME_WIDTH) end)
   pcall(function()
     resultsFrame:ClearAllPoints()
-    if anchored and anchorTarget then
-      resultsFrame:SetPoint("TOPLEFT", anchorTarget, "TOPLEFT", offsetX, 0)
+    if anchored and prof then
+      resultsFrame:SetPoint("TOPLEFT", prof, "TOPLEFT", offsetX, 0)
     else
       local rel = _G[resultsDefaultPoint.rel] or _G.UIParent
       resultsFrame:SetPoint(resultsDefaultPoint.point, rel, resultsDefaultPoint.relPoint, resultsDefaultPoint.x, resultsDefaultPoint.y)
@@ -413,7 +475,7 @@ local function applyResultsLayout()
   local contentWidth = RESULTS_FRAME_WIDTH - 32
   for _, row in ipairs(resultsRows) do
     if row then
-      for _, fs in ipairs({ row.name, row.detail }) do
+      for _, fs in ipairs({ row.name, row.prob, row.sub }) do
         if fs then
           pcall(function() fs:SetWidth(contentWidth) end)
           if hasMethod(fs, "SetWordWrap") then pcall(function() fs:SetWordWrap(true) end) end
@@ -525,28 +587,61 @@ local function useElvUISkinEnabled()
   return ok and value == true
 end
 
+-- SB-109: detect ElvUI by its public global, matching the project's adapter
+-- convention (public global presence, no IsAddOnLoaded). C_AddOns.IsAddOnLoaded
+-- is Retail-only and absent on Forever 1.60.1, which silently forced the stock
+-- look before this fix.
 local function elvUIPresent()
-  local addon = _G.C_AddOns
-  if type(addon) ~= "table" or type(addon.IsAddOnLoaded) ~= "function" then return false end
-  local ok, loaded = pcall(addon.IsAddOnLoaded, "ElvUI")
-  return ok and loaded == true
+  return type(_G.ElvUI) == "table"
 end
 
 function Skilly.UI.Style()
   if useElvUISkinEnabled() and elvUIPresent() then
     return {
       name = "elvui",
+      titleBarColor = { 0.10, 0.10, 0.11, 1 },
+      titleBarTexture = nil,
+      titleTextColor = { 0.92, 0.92, 0.94, 1 },
       headerColor = { 0.35, 0.85, 0.4, 1 },
-      backdropColor = { 0.06, 0.06, 0.07, 0.96 },
-      borderColor = { 0.25, 0.25, 0.28, 1 },
+      detailColor = { 0.68, 0.70, 0.74, 1 },
+      backdropColor = { 0.055, 0.055, 0.065, 0.97 },
+      borderColor = { 0.18, 0.18, 0.20, 1 },
+      buttonColor = { 0.12, 0.12, 0.13, 1 },
     }
   end
   return {
     name = "stock",
+    titleBarColor = nil,
+    titleBarTexture = "Interface\\DialogFrame\\UI-DialogBox-Header",
+    titleTextColor = nil,
     headerColor = { 1, 0.82, 0, 1 },
+    detailColor = nil,
     backdropColor = nil,
     borderColor = nil,
+    buttonColor = nil,
   }
+end
+
+-- SB-109: darken a button when ElvUI is active. UIPanelButtonTemplate draws its
+-- own tan texture, so recolor the normal texture to a dark face and add a thin
+-- border; any missing method degrades to the stock button without erroring.
+local function styleButton(btn, style)
+  if not btn or not style or style.name ~= "elvui" then return end
+  if style.buttonColor then
+    local okNT, nt = pcall(function()
+      if type(btn.GetNormalTexture) ~= "function" then return nil end
+      return btn:GetNormalTexture()
+    end)
+    if okNT and nt then
+      pcall(function() nt:SetColorTexture(style.buttonColor[1], style.buttonColor[2], style.buttonColor[3], style.buttonColor[4]) end)
+    end
+  end
+  if style.borderColor then
+    local okBD, has = pcall(function() return btn.SetBackdropBorderColor end)
+    if okBD and has then
+      callMethod(btn, "SetBackdropBorderColor", style.borderColor[1], style.borderColor[2], style.borderColor[3], style.borderColor[4])
+    end
+  end
 end
 
 -- SB-108: guarded, opt-in sidebar tab. Appends a Skilly tab to the shared
@@ -590,6 +685,17 @@ function Skilly.UI.TryAddSidebarTab()
   callMethod(tab, "Show")
   sidebarTab = tab
   return tab
+end
+
+local function refreshInlineControls()
+  if toggleAHButton then
+    callMethod(toggleAHButton, "SetText",
+        featureOn("allowAHMaterials", true) and "AH: on" or "AH: off")
+  end
+  if toggleAltsButton then
+    callMethod(toggleAltsButton, "SetText",
+        featureOn("useAltInventory", false) and "Alts: on" or "Alts: off")
+  end
 end
 
 local function buildResultsFrame()
@@ -642,12 +748,35 @@ local function buildResultsFrame()
     pcall(applyResultsLayout)
   end)
 
-  local title = createFontString(frame, "SkillyResultsTitle", "GameFontNormalLarge")
-  callMethod(title, "SetPoint", "TOPLEFT", 14, -10)
-  callMethod(title, "SetText", "Skilly - next craft")
+  -- SB-58: native title bar. A strip across the top (stock header texture, or a
+  -- flat ElvUI colour) with a highlight-font title, like a stock WoW window.
+  local titleBar = createTexture(frame, "SkillyResultsTitleBar")
+  if titleBar then
+    callMethod(titleBar, "SetPoint", "TOPLEFT", frame, "TOPLEFT", 0, 0)
+    callMethod(titleBar, "SetPoint", "TOPRIGHT", frame, "TOPRIGHT", 0, 0)
+    callMethod(titleBar, "SetHeight", 24)
+    if style.titleBarTexture then
+      callMethod(titleBar, "SetTexture", style.titleBarTexture)
+    elseif style.titleBarColor then
+      callMethod(titleBar, "SetColorTexture", style.titleBarColor[1],
+          style.titleBarColor[2], style.titleBarColor[3], style.titleBarColor[4])
+    end
+  end
+
+  local title = createFontString(frame, "SkillyResultsTitle", "GameFontHighlight")
+  if not title then title = createFontString(frame, "SkillyResultsTitle", "GameFontNormalLarge") end
+  if not title then title = createFontString(frame, "SkillyResultsTitle", "GameFontNormal") end
+  if title then
+    callMethod(title, "SetPoint", "TOPLEFT", 14, -5)
+    callMethod(title, "SetText", "Skilly - next craft")
+    if style.titleTextColor then
+      callMethod(title, "SetTextColor", style.titleTextColor[1],
+          style.titleTextColor[2], style.titleTextColor[3], style.titleTextColor[4])
+    end
+  end
 
   local hint = createFontString(frame, "SkillyResultsHint", "GameFontNormalSmall")
-  callMethod(hint, "SetPoint", "TOPLEFT", 14, -30)
+  callMethod(hint, "SetPoint", "TOPLEFT", 14, -26)
   callMethod(hint, "SetText", "Esc to close. Drag to move.")
 
   local close = createFrame("Button", "SkillyResultsClose", frame,
@@ -665,14 +794,62 @@ local function buildResultsFrame()
     end)
   end
 
+  -- SB-65: action row — "Craft next" selects the top recommendation, and two
+  -- inline toggles (AH materials / alt inventory) re-run the recommendation.
+  craftNextButton = createFrame("Button", "SkillyCraftNext", frame,
+      "UIPanelButtonTemplate")
+  if craftNextButton then
+    callMethod(craftNextButton, "SetText", "Craft next")
+    callMethod(craftNextButton, "SetWidth", 92)
+    callMethod(craftNextButton, "SetHeight", 22)
+    callMethod(craftNextButton, "SetPoint", "TOPLEFT", 14, -32)
+    callMethod(craftNextButton, "SetScript", "OnClick", function()
+      local top = type(lastEntries) == "table" and lastEntries[1] or nil
+      if top then selectRecipe(top) end
+    end)
+  end
+
+  toggleAHButton = createFrame("Button", "SkillyToggleAH", frame,
+      "UIPanelButtonTemplate")
+  if toggleAHButton then
+    callMethod(toggleAHButton, "SetWidth", 78)
+    callMethod(toggleAHButton, "SetHeight", 22)
+    callMethod(toggleAHButton, "SetPoint", "TOPLEFT", 114, -32)
+    callMethod(toggleAHButton, "SetScript", "OnClick", function()
+      setFeatureFlag("allowAHMaterials", not featureOn("allowAHMaterials", true))
+      refreshInlineControls()
+      runRecommend()
+    end)
+  end
+
+  toggleAltsButton = createFrame("Button", "SkillyToggleAlts", frame,
+      "UIPanelButtonTemplate")
+  if toggleAltsButton then
+    callMethod(toggleAltsButton, "SetWidth", 82)
+    callMethod(toggleAltsButton, "SetHeight", 22)
+    callMethod(toggleAltsButton, "SetPoint", "TOPLEFT", 200, -32)
+    callMethod(toggleAltsButton, "SetScript", "OnClick", function()
+      setFeatureFlag("useAltInventory", not featureOn("useAltInventory", false))
+      refreshInlineControls()
+      runRecommend()
+    end)
+  end
+  refreshInlineControls()
+  styleButton(craftNextButton, style)
+  styleButton(toggleAHButton, style)
+  styleButton(toggleAltsButton, style)
+
   local contentWidth = RESULTS_FRAME_WIDTH - 32
   for i = 1, RESULTS_MAX_ROWS do
     local header = createFontString(frame, "SkillyResultHeader" .. i,
-        "GameFontNormal")
+        "GameFontNormalSmall")
     local name = createFontString(frame, "SkillyResultName" .. i,
         "GameFontNormal")
-    local detail = createFontString(frame, "SkillyResultDetail" .. i,
+    local prob = createFontString(frame, "SkillyResultProb" .. i,
         "GameFontNormalSmall")
+    local sub = createFontString(frame, "SkillyResultSub" .. i,
+        "GameFontNormalSmall")
+    local select = createFrame("Button", "SkillyResultSelect" .. i, frame)
     if header then
       callMethod(header, "SetWidth", contentWidth)
       callMethod(header, "SetJustifyH", "LEFT")
@@ -680,21 +857,41 @@ local function buildResultsFrame()
           style.headerColor[2], style.headerColor[3], style.headerColor[4])
     end
     if name then
-      callMethod(name, "SetWidth", contentWidth)
+      callMethod(name, "SetWidth", contentWidth - 110)
       callMethod(name, "SetJustifyH", "LEFT")
       if hasMethod(name, "SetWordWrap") then callMethod(name, "SetWordWrap", true) end
       if hasMethod(name, "SetNonSpaceWrap") then callMethod(name, "SetNonSpaceWrap", true) end
     end
-    if detail then
-      callMethod(detail, "SetWidth", contentWidth)
-      callMethod(detail, "SetJustifyH", "LEFT")
-      if hasMethod(detail, "SetWordWrap") then callMethod(detail, "SetWordWrap", true) end
-      if hasMethod(detail, "SetNonSpaceWrap") then callMethod(detail, "SetNonSpaceWrap", true) end
+    if prob then
+      callMethod(prob, "SetJustifyH", "RIGHT")
     end
-    resultsRows[i] = { header = header, name = name, detail = detail }
+    if sub then
+      callMethod(sub, "SetWidth", contentWidth)
+      callMethod(sub, "SetJustifyH", "LEFT")
+      if style.detailColor then
+        callMethod(sub, "SetTextColor", style.detailColor[1],
+            style.detailColor[2], style.detailColor[3], style.detailColor[4])
+      end
+      if hasMethod(sub, "SetWordWrap") then callMethod(sub, "SetWordWrap", true) end
+    end
+    if select then
+      local idx = i
+      callMethod(select, "SetScript", "OnClick", function()
+        local top = type(lastEntries) == "table" and lastEntries[idx] or nil
+        if top then selectRecipe(top) end
+      end)
+      callMethod(select, "SetScript", "OnEnter", function()
+        local top = type(lastEntries) == "table" and lastEntries[idx] or nil
+        if top then showRowTooltip(top, select) end
+      end)
+      callMethod(select, "SetScript", "OnLeave", hideRowTooltip)
+      callMethod(select, "Hide")
+    end
+    resultsRows[i] = { header = header, name = name, prob = prob, sub = sub, select = select }
     callMethod(header, "Hide")
     callMethod(name, "Hide")
-    callMethod(detail, "Hide")
+    callMethod(prob, "Hide")
+    callMethod(sub, "Hide")
   end
 
   -- UISpecialFrames is the stock Escape-to-close mechanism for windows.
@@ -715,35 +912,143 @@ local function fontStringHeight(fs, fallback)
   return fallback
 end
 
-local function placeRow(row, y, headerText, name, detail, recipe)
-  if not row or not row.name or not row.detail then return y end
+-- SB-110: the % chance of a skill-up, from the live difficulty colour plus the
+-- model probability. Orange = guaranteed, gray = none, else the model estimate.
+local function probabilityText(entry)
+  if type(entry) ~= "table" then return "" end
+  local recipe = type(entry.recipe) == "table" and entry.recipe or {}
+  local diff = type(recipe.difficulty) == "string" and recipe.difficulty or "unknown"
+  local p = tonumber(entry.p) or 0
+  if diff == "orange" then return "100%" end
+  if diff == "gray" then return "0%" end
+  if p >= 1 then return "~100%" end
+  return "~" .. tostring(math.floor(p * 100 + 0.5)) .. "%"
+end
+
+-- SB-110: real money out-of-pocket, or "free"/"unpriced" when there is no
+-- reliable spend. The ranking score stays internal, never shown to the player.
+local function costText(entry)
+  if type(entry) ~= "table" then return "" end
+  local craftable = tonumber(entry.craftable) or 0
+  if craftable > 0 then return "free" end
+  local out = tonumber(entry.outOfPocketCost) or 0
+  if out > 0 then return Skilly.FormatCopper(out) end
+  return "unpriced"
+end
+
+-- SB-110: how many crafts are available now, or how many materials to buy.
+local function availabilityText(entry)
+  if type(entry) ~= "table" then return "" end
+  local craftable = tonumber(entry.craftable) or 0
+  if craftable > 0 then return craftable .. " on hand" end
+  local missing = type(entry.missing) == "table" and entry.missing or {}
+  local need = 0
+  for _, row in ipairs(missing) do
+    if type(row) == "table" then need = need + (tonumber(row.need) or 0) end
+  end
+  if need > 0 then return "buy " .. need .. " mat" .. (need == 1 and "" or "s") end
+  return ""
+end
+
+-- SB-110: full detail on hover. GameTooltip, guarded; split the stripped
+-- Describe body onto wrapped lines so the compact row loses no information.
+showRowTooltip = function(entry, btn)
+  local tt = _G.GameTooltip
+  if type(tt) ~= "table" then return end
+  local body = ""
+  if type(Skilly.Rank) == "table"
+      and type(Skilly.Rank.Describe) == "function" then
+    local ok, line = pcall(Skilly.Rank.Describe, entry)
+    if ok and type(line) == "string" then
+      body = line
+      if type(Skilly.StripColour) == "function" then
+        local okS, s = pcall(Skilly.StripColour, line)
+        if okS and type(s) == "string" and s ~= "" then body = s end
+      end
+    end
+  end
+  if body == "" then return end
+  local recipe = type(entry.recipe) == "table" and entry.recipe or {}
+  local name = type(recipe.name) == "string" and recipe.name or "Unknown recipe"
+  local prefix = name .. ": "
+  if string.sub(body, 1, #prefix) == prefix then body = string.sub(body, #prefix + 1) end
+  callMethod(tt, "SetOwner", btn, "ANCHOR_RIGHT")
+  callMethod(tt, "ClearLines")
+  callMethod(tt, "AddLine", name, 1, 1, 1)
+  for seg in string.gmatch(body, "[^,]+") do
+    local s = seg:gsub("^%s+", ""):gsub("%s+$", "")
+    if s ~= "" and s ~= "." then
+      callMethod(tt, "AddLine", s, 0.7, 0.7, 0.7, true)
+    end
+  end
+  callMethod(tt, "Show")
+end
+
+hideRowTooltip = function()
+  local tt = _G.GameTooltip
+  if type(tt) == "table" then callMethod(tt, "Hide") end
+end
+
+local function placeRow(row, y, headerText, name, prob, subline, recipe)
+  if not row or not row.name then return y end
   if row.header then
     if type(headerText) == "string" and headerText ~= "" then
       callMethod(row.header, "SetText", headerText)
       callMethod(row.header, "ClearAllPoints")
       callMethod(row.header, "SetPoint", "TOPLEFT", 14, -y)
       callMethod(row.header, "Show")
-      y = y + fontStringHeight(row.header, 14) + 4
+      y = y + fontStringHeight(row.header, 12) + 3
     else
       callMethod(row.header, "Hide")
     end
   end
 
-  callMethod(row.name, "SetText", name)
   local r, g, b = clientDifficultyColor(recipe)
+
+  callMethod(row.name, "SetText", name)
   if r and g and b then callMethod(row.name, "SetTextColor", r, g, b, 1) end
   callMethod(row.name, "ClearAllPoints")
   callMethod(row.name, "SetPoint", "TOPLEFT", 14, -y)
   callMethod(row.name, "Show")
   local nameH = fontStringHeight(row.name, 14)
 
-  callMethod(row.detail, "SetText", detail)
-  callMethod(row.detail, "ClearAllPoints")
-  callMethod(row.detail, "SetPoint", "TOPLEFT", 14, -(y + nameH + 2))
-  callMethod(row.detail, "Show")
-  local detailH = fontStringHeight(row.detail, 12)
+  local probH = 0
+  if row.prob then
+    if type(prob) == "string" and prob ~= "" then
+      callMethod(row.prob, "SetText", prob)
+      if r and g and b then callMethod(row.prob, "SetTextColor", r, g, b, 1) end
+      callMethod(row.prob, "ClearAllPoints")
+      callMethod(row.prob, "SetPoint", "TOPRIGHT", -14, -y)
+      callMethod(row.prob, "Show")
+      probH = fontStringHeight(row.prob, 12)
+    else
+      callMethod(row.prob, "Hide")
+    end
+  end
+  local lineH = math.max(nameH, probH)
 
-  return y + nameH + 2 + detailH + 8
+  local subH = 0
+  if row.sub then
+    if type(subline) == "string" and subline ~= "" then
+      callMethod(row.sub, "SetText", subline)
+      callMethod(row.sub, "ClearAllPoints")
+      callMethod(row.sub, "SetPoint", "TOPLEFT", 14, -(y + lineH + 1))
+      callMethod(row.sub, "Show")
+      subH = fontStringHeight(row.sub, 12)
+    else
+      callMethod(row.sub, "Hide")
+    end
+  end
+
+  if row.select then
+    callMethod(row.select, "ClearAllPoints")
+    callMethod(row.select, "SetPoint", "TOPLEFT", 14, -y)
+    callMethod(row.select, "SetWidth", RESULTS_FRAME_WIDTH - 28)
+    callMethod(row.select, "SetHeight", math.max(18, lineH + subH + 2))
+    callMethod(row.select, "Show")
+  end
+
+  return y + lineH + subH + 5
 end
 
 function Skilly.UI.ShowResults(entries)
@@ -759,7 +1064,7 @@ function Skilly.UI.ShowResults(entries)
 
   lastEntries = entries
   local count = math.min(#entries, RESULTS_MAX_ROWS)
-  local y = 50
+  local y = 62
   local lastGroup = nil
   for i = 1, RESULTS_MAX_ROWS do
     local row = resultsRows[i]
@@ -768,7 +1073,9 @@ function Skilly.UI.ShowResults(entries)
       if row then
         if row.header then callMethod(row.header, "Hide") end
         callMethod(row.name, "Hide")
-        callMethod(row.detail, "Hide")
+        callMethod(row.prob, "Hide")
+        callMethod(row.sub, "Hide")
+        callMethod(row.select, "Hide")
       end
     else
       local group = resultGroup(entry)
@@ -780,19 +1087,11 @@ function Skilly.UI.ShowResults(entries)
       local recipe = type(entry.recipe) == "table" and entry.recipe or {}
       local name = type(recipe.name) == "string" and recipe.name
           or "Unknown recipe"
-      local detail = ""
-      if type(Skilly.Rank) == "table"
-          and type(Skilly.Rank.Describe) == "function" then
-        local ok, line = pcall(Skilly.Rank.Describe, entry)
-        if ok and type(line) == "string" then
-          detail = line
-          local prefix = name .. ": "
-          if string.sub(detail, 1, #prefix) == prefix then
-            detail = string.sub(detail, #prefix + 1)
-          end
-        end
-      end
-      y = placeRow(row, y, headerText, i .. ". " .. name, detail, recipe)
+      local prob = probabilityText(entry)
+      local sub = costText(entry)
+      local avail = availabilityText(entry)
+      if avail ~= "" then sub = sub .. " · " .. avail end
+      y = placeRow(row, y, headerText, i .. ". " .. name, prob, sub, recipe)
     end
   end
 
